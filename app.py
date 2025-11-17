@@ -4,6 +4,7 @@ Optimized Streamlit app:
 - Faster Google Sheets loading
 - Cleaner structure
 - Safer OpenAI prompt formatting
+- Keeps product codes like TEL-20211 intact
 - Reduced token usage
 - Better error handling
 - Fixed sheet ID
@@ -80,25 +81,28 @@ def load_fixed_sheet(worksheet_name: str = "Sheet1") -> pd.DataFrame:
 
     df = pd.DataFrame(raw[1:], columns=unique_headers)
 
-    # Auto numeric conversion
+    # -----------------------
+    # SAFE AUTO NUMERIC CONVERSION
+    # Keeps product codes like 'TEL-20211' intact
+    # -----------------------
     for col in df.columns:
-    # Skip columns that clearly contain text with letters
-    if df[col].astype(str).str.contains(r"[A-Za-z]", regex=True).any():
-        continue
 
-    cleaned = df[col].astype(str).str.replace(r"[^0-9.\-]", "", regex=True)
-    numeric_count = cleaned.str.match(r"^-?\d+(\.\d+)?$").sum()
+        # Skip any column that contains letters (text-based columns)
+        if df[col].astype(str).str.contains(r"[A-Za-z]", regex=True).any():
+            continue
 
-    # Convert only if MOST of the rows are numeric-like
-    if numeric_count > len(df[col]) * 0.5:
-        df[col] = pd.to_numeric(cleaned, errors="coerce")
+        cleaned = df[col].astype(str).str.replace(r"[^0-9.\-]", "", regex=True)
+        numeric_count = cleaned.str.match(r"^-?\d+(\.\d+)?$").sum()
+
+        # Only convert if MOST values are numeric-like
+        if numeric_count > len(df[col]) * 0.5:
+            df[col] = pd.to_numeric(cleaned, errors="coerce")
 
     return df
 
 # -----------------------
 # Ask model (Optimized)
 # -----------------------
-
 def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "gpt-4.1") -> str:
     if client is None:
         return "Error: OpenAI client not configured. Add OPENAI_API_KEY to secrets."
