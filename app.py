@@ -259,22 +259,7 @@ if "df_all" in st.session_state:
 
     # Quick analytics
     st.markdown("---")
-    st.subheader("Quick Analytics")
-    num_cols = df_all.select_dtypes(include="number").columns.tolist()
-    if num_cols:
-        analytics_col = st.selectbox("Choose numeric column", num_cols)
-        a1, a2, a3 = st.columns(3)
-        with a1:
-            if st.button("Sum"):
-                st.info(f"Sum ({analytics_col}) = {df_all[analytics_col].sum()}" )
-        with a2:
-            if st.button("Average"):
-                st.info(f"Average ({analytics_col}) = {df_all[analytics_col].mean()}" )
-        with a3:
-            if st.button("Count"):
-                st.info(f"Count ({analytics_col}) = {df_all[analytics_col].count()}" )
-
-    # Group by
+    st.subheader("Group by
     grp_col = st.selectbox("Group by (optional)", [None] + list(df_all.columns))
     if grp_col and st.button("Run Group By"):
         try:
