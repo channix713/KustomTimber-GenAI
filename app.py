@@ -80,35 +80,31 @@ def load_fixed_sheet(worksheet_name: str = "Sheet1") -> pd.DataFrame:
 # Ask model
 # -----------------------
 def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "gpt-4.1") -> str:
+    """Ask the model a question about the dataset.
+    Keeps prompts compact and safe.
+    """
     if client is None:
         return "Error: OpenAI client not configured. Add OPENAI_API_KEY to secrets."
 
-    col_map = {col: f"c{i}" for i, col in enumerate(df.columns)}
-    short_df = df.rename(columns=col_map).copy()
+    if df is None or df.empty:
+        return "Dataset is empty. Cannot analyze."
+
+    # Limit rows to reduce token usage
+    df_trimmed = df.head(300)
+
+    col_map = {col: f"c{i}" for i, col in enumerate(df_trimmed.columns)}
+    short_df = df_trimmed.rename(columns=col_map).copy()
     full_data = short_df.to_dict(orient="records")
 
     system_prompt = (
-        "You are a senior data analyst AI with FULL access to the dataset. "
-        "Translate shortened column names to the original names in your answer. "
-        "Perform exact calculations using ONLY the provided data."
+        "You are a senior data analyst AI. Use ONLY the provided data for calculations. "
+        "Map shortened column names back to originals when presenting results. Be concise."
     )
 
     user_prompt = (
-        f"COLUMN MAP (short -> original):\n{col_map}\n\n"
-        f"FULL DATASET (shorthand columns) as rows:\n{full_data}\n\n"
-        f"User question: {question}\n"
-    ):
-"
-        f"{col_map}
-
-"
-        "FULL DATASET (shorthand columns) as rows:
-"
-        f"{full_data}
-
-"
-        f"User question: {question}
-"
+        f"COLUMN MAP (short -> original):\n{json.dumps(col_map, indent=2)}\n\n"
+        f"DATASET (trimmed to 300 rows):\n{json.dumps(full_data, ensure_ascii=False)}\n\n"
+        f"QUESTION: {question}\n"
     )
 
     try:
@@ -118,16 +114,17 @@ def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "g
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.2,
+            temperature=0.15,
         )
         return response.choices[0].message.content
+
     except Exception as e:
         return f"⚠️ Error: {e}"
 
 # -----------------------
 # Streamlit UI
 # -----------------------
-st.title("📊 Kustom Timber Stock Inventory AI Assistant")
+st.title("📊 Fixed-Sheet GenAI Data Assistant")
 
 with st.sidebar:
     st.header("Settings")
