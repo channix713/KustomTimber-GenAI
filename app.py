@@ -259,7 +259,7 @@ if "df_all" in st.session_state:
 
     # Quick analytics
     st.markdown("---")
-    st.subheader("Group by")"Group by (optional)", [None] + list(df_all.columns))
+    st.subheader("Group by")group_col = st.selectbox("Group by (optional)", [None] + list(df_all.columns))
     if grp_col and st.button("Run Group By"):
         try:
             gb = df_all.groupby(grp_col).size().reset_index(name="count")
