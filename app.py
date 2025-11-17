@@ -94,11 +94,18 @@ def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "g
     )
 
     user_prompt = (
-        "COLUMN MAP (short -> original):\n"
-        f"{col_map}\n\n"
-        "FULL DATASET (shorthand columns) as rows:\n"
-        f"{full_data}\n\n"
-        f"User question: {question}\n"
+        "COLUMN MAP (short -> original):
+"
+        f"{col_map}
+
+"
+        "FULL DATASET (shorthand columns) as rows:
+"
+        f"{full_data}
+
+"
+        f"User question: {question}
+"
     )
 
     try:
@@ -117,13 +124,13 @@ def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "g
 # -----------------------
 # Streamlit UI
 # -----------------------
-st.title("📊 Kustom Timber Stocks AI Assitant")
+st.title("📊 Kustom Timber Stock Inventory AI Assistan")
 
 with st.sidebar:
     st.header("Settings")
     worksheet_name = st.text_input("Worksheet tab name", value="Sheet1")
     model_choice = st.selectbox("Model", ["gpt-4.1", "gpt-3.5-turbo"], index=0)
-    load_btn = st.button("Load Fixed Sheet")
+    load_btn = st.button("Load Stock Inventory Data)
 
 if load_btn:
     with st.spinner("Loading sheet..."):
