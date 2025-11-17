@@ -82,9 +82,16 @@ def load_fixed_sheet(worksheet_name: str = "Sheet1") -> pd.DataFrame:
 
     # Auto numeric conversion
     for col in df.columns:
-        cleaned = df[col].astype(str).str.replace(r"[^0-9.-]", "", regex=True)
-        if cleaned.str.match(r"^-?\d+(\.\d+)?$").sum() > len(cleaned) * 0.5:
-            df[col] = pd.to_numeric(cleaned, errors="ignore")
+    # Skip columns that clearly contain text with letters
+    if df[col].astype(str).str.contains(r"[A-Za-z]", regex=True).any():
+        continue
+
+    cleaned = df[col].astype(str).str.replace(r"[^0-9.\-]", "", regex=True)
+    numeric_count = cleaned.str.match(r"^-?\d+(\.\d+)?$").sum()
+
+    # Convert only if MOST of the rows are numeric-like
+    if numeric_count > len(df[col]) * 0.5:
+        df[col] = pd.to_numeric(cleaned, errors="coerce")
 
     return df
 
