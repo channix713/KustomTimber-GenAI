@@ -1,17 +1,13 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
-# app.py (modified)
+# app.py (updated for Streamlit Cloud — loads Google credentials from secrets)
 """
 Streamlit app: Google Sheets + Generative AI Data Assistant
-- Spreadsheet ID is now FIXED (user cannot change it in the UI)
-- Model returns answer directly (same as before, but no extra UI prompts)
+- Spreadsheet ID is FIXED
+- Google credentials come from Streamlit Secrets
+- No credentials.json file needed
 """
 
 import os
+import json
 from pathlib import Path
 from typing import List
 
@@ -23,7 +19,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 # -----------------------
-# Config / secrets
+# Load OpenAI Key (Streamlit Secrets OR local .env for dev)
 # -----------------------
 try:
     ENV_PATH = Path(__file__).parent / "OpenAIKey.env"
@@ -31,26 +27,36 @@ except NameError:
     ENV_PATH = Path(os.getcwd()) / "OpenAIKey.env"
 
 load_dotenv(dotenv_path=ENV_PATH, override=True)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
+# -----------------------
+# Google credentials from secrets
+# -----------------------
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
-SERVICE_ACCOUNT_FILE = "credentials.json"
 
-# FIXED spreadsheet key
-FIXED_SPREADSHEET_KEY = "1oeFZRrqr7YI52L5EAl972ghesCsBYcPiCOi09n_mCgY"  # <----- CHANGE THIS
+def get_google_creds():
+    json_str = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    info = json.loads(json_str)
+    return Credentials.from_service_account_info(info, scopes=SCOPES)
+
+# -----------------------
+# Fixed Spreadsheet ID
+# -----------------------
+FIXED_SPREADSHEET_KEY = "1oeFZRrqr7YI52L5EAl972ghesCsBYcPiCOi09n_mCgY"
 
 st.set_page_config(page_title="Sheets → GenAI Assistant", layout="wide")
 
 # -----------------------
-# Load one tab from fixed spreadsheet
+# Load worksheet (fixed sheet)
 # -----------------------
 @st.cache_data(ttl=300)
 def load_fixed_sheet(worksheet_name: str = "Sheet1") -> pd.DataFrame:
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    creds = get_google_creds()
     client_gs = gspread.authorize(creds)
 
     sheet = client_gs.open_by_key(FIXED_SPREADSHEET_KEY).worksheet(worksheet_name)
@@ -59,7 +65,6 @@ def load_fixed_sheet(worksheet_name: str = "Sheet1") -> pd.DataFrame:
         return pd.DataFrame()
 
     headers = raw_values[0]
-    # ensure duplicate headers are unique
     unique_headers = []
     for h in headers:
         if h not in unique_headers:
@@ -76,7 +81,7 @@ def load_fixed_sheet(worksheet_name: str = "Sheet1") -> pd.DataFrame:
 # -----------------------
 def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "gpt-4.1") -> str:
     if client is None:
-        return "Error: OpenAI client not configured. Set OPENAI_API_KEY."
+        return "Error: OpenAI client not configured. Add OPENAI_API_KEY to secrets."
 
     col_map = {col: f"c{i}" for i, col in enumerate(df.columns)}
     short_df = df.rename(columns=col_map).copy()
@@ -84,9 +89,8 @@ def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "g
 
     system_prompt = (
         "You are a senior data analyst AI with FULL access to the dataset. "
-        "The dataset is provided with shortened column names and a column map. "
-        "Translate shorthand names back to the original column names in your answer. "
-        "Perform exact calculations and do not guess any values."
+        "Translate shortened column names to the original names in your answer. "
+        "Perform exact calculations using ONLY the provided data."
     )
 
     user_prompt = (
@@ -113,7 +117,7 @@ def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "g
 # -----------------------
 # Streamlit UI
 # -----------------------
-st.title("📊 Kustom Timber Stocks AI Assitant ")
+st.title("📊 Fixed-Sheet GenAI Data Assistant")
 
 with st.sidebar:
     st.header("Settings")
@@ -139,7 +143,6 @@ if "df_all" in st.session_state:
     st.subheader("Preview (first 200 rows)")
     st.dataframe(df_all.head(200))
 
-    # Ask question
     st.subheader("Ask a question about the data")
     question = st.text_input("Your question")
 
@@ -150,8 +153,8 @@ if "df_all" in st.session_state:
         st.write(answer)
 
     st.divider()
+
     if st.button("Show column names"):
         st.write(list(df_all.columns))
 else:
     st.info("Load the fixed spreadsheet using the sidebar.")
-
