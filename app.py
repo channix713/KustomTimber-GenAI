@@ -259,16 +259,6 @@ if "df_all" in st.session_state:
 
     # Quick analytics
     st.markdown("---")
-    st.subheader("Group by")
-    group_col = st.selectbox("Group by (optional)", [None] + list(df_all.columns))
-    if grp_col and st.button("Run Group By"):
-        try:
-            gb = df_all.groupby(grp_col).size().reset_index(name="count")
-            st.dataframe(gb)
-        except Exception as e:
-            st.error(f"Group by failed: {e}")
-
-    # AI question section
     st.markdown("---")
     st.subheader("Ask AI about this data")
     ai_question = st.text_input("Type a question for the AI (e.g., 'total stock for TEL-20211')")
