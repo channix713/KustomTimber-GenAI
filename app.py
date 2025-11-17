@@ -117,7 +117,7 @@ def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "g
 # -----------------------
 # Streamlit UI
 # -----------------------
-st.title("📊 Fixed-Sheet GenAI Data Assistant")
+st.title("📊 Kustom Timber Stocks AI Assitant")
 
 with st.sidebar:
     st.header("Settings")
