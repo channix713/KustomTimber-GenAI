@@ -283,17 +283,6 @@ if "df_all" in st.session_state:
         except Exception as e:
             st.error(f"Group by failed: {e}")
 
-    # Exports
-    st.markdown("---")
-    st.subheader("Exports")
-    csv_bytes = df_all.to_csv(index=False).encode("utf-8")
-    json_bytes = df_all.to_json(orient="records").encode("utf-8")
-    excel_bytes = to_excel_bytes(df_all)
-
-    st.download_button("Download CSV", data=csv_bytes, file_name="inventory.csv", mime="text/csv")
-    st.download_button("Download JSON", data=json_bytes, file_name="inventory.json", mime="application/json")
-    st.download_button("Download Excel", data=excel_bytes, file_name="inventory.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
     # AI question section
     st.markdown("---")
     st.subheader("Ask AI about this data")
