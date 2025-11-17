@@ -1,0 +1,7 @@
+# Ignore secret files
+credentials.json
+OpenAIKey.env
+
+# Python cache
+__pycache__/
+*.pyc
