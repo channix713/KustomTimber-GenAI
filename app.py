@@ -164,4 +164,4 @@ if "df_all" in st.session_state:
     if st.button("Show column names"):
         st.write(list(df_all.columns))
 else:
-    st.info("Load the fixed spreadsheet using the sidebar.")
+    st.info("Please Load the data in the left pane.")
