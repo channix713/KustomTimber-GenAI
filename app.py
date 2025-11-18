@@ -3,7 +3,6 @@
 """
 This version includes:
 - Product Code filter
-- Batch Number filter
 - Everything else unchanged
 """
 
@@ -168,7 +167,7 @@ if "df_all" in st.session_state:
 
     # PREVIEW
     st.subheader("📋 Data Preview (first 200 rows)")
-    st.dataframe(df_all.head(200), use_container_width=True)
+    st.dataframe(df_all, use_container_width=True)
 
     # AI QUESTION
     st.subheader("💬 Ask a question about your stock data")
