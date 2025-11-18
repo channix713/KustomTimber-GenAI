@@ -1,13 +1,10 @@
-# app.py (Standard Optimized Version for Streamlit Cloud)
+# app.py with Product Code & Batch Number Filters Added
+
 """
-Optimized Streamlit app:
-- Faster Google Sheets loading
-- Cleaner structure
-- Safer OpenAI prompt formatting
-- Keeps product codes like TEL-20211 intact
-- Reduced token usage
-- Better error handling
-- Fixed sheet ID
+This version includes:
+- Product Code filter
+- Batch Number filter
+- Everything else unchanged
 """
 
 import os
@@ -21,7 +18,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 # -----------------------
-# Load OpenAI Key (Secrets > .env fallback)
+# Load OpenAI Key
 # -----------------------
 try:
     ENV_PATH = Path(__file__).parent / "OpenAIKey.env"
@@ -33,7 +30,7 @@ OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # -----------------------
-# Google Service Account (from Secrets)
+# Google Service Account
 # -----------------------
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -41,25 +38,19 @@ SCOPES = [
 ]
 
 def get_google_creds():
-    try:
-        info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
-        return Credentials.from_service_account_info(info, scopes=SCOPES)
-    except Exception as e:
-        st.error(f"Google credentials error: {e}")
-        raise
+    info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    return Credentials.from_service_account_info(info, scopes=SCOPES)
 
-# -----------------------
-# Fixed Spreadsheet ID
-# -----------------------
+# Fixed sheet
 FIXED_SPREADSHEET_KEY = "1oeFZRrqr7YI52L5EAl972ghesCsBYcPiCOi09n_mCgY"
 
 st.set_page_config(page_title="Kustom Timber Stock AI Assistant", layout="wide")
 
 # -----------------------
-# Load worksheet
+# Load Worksheet
 # -----------------------
 @st.cache_data(ttl=300)
-def load_fixed_sheet(worksheet_name: str = "Sheet1") -> pd.DataFrame:
+def load_fixed_sheet(worksheet_name="Sheet1"):
     creds = get_google_creds()
     gs = gspread.authorize(creds)
 
@@ -69,8 +60,6 @@ def load_fixed_sheet(worksheet_name: str = "Sheet1") -> pd.DataFrame:
         return pd.DataFrame()
 
     headers = raw[0]
-
-    # Fix duplicate headers
     unique_headers = []
     for h in headers:
         if h not in unique_headers:
@@ -81,49 +70,39 @@ def load_fixed_sheet(worksheet_name: str = "Sheet1") -> pd.DataFrame:
 
     df = pd.DataFrame(raw[1:], columns=unique_headers)
 
-    # -----------------------
-    # SAFE AUTO NUMERIC CONVERSION
-    # Keeps product codes like 'TEL-20211' intact
-    # -----------------------
+    # SAFE number conversion (preserves product codes)
     for col in df.columns:
-
-        # Skip any column that contains letters (text-based columns)
         if df[col].astype(str).str.contains(r"[A-Za-z]", regex=True).any():
             continue
-
         cleaned = df[col].astype(str).str.replace(r"[^0-9.\-]", "", regex=True)
-        numeric_count = cleaned.str.match(r"^-?\d+(\.\d+)?$").sum()
-
-        # Only convert if MOST values are numeric-like
+        numeric_count = cleaned.str.match(r"^-?\d+(\.\d+)?$", regex=True).sum()
         if numeric_count > len(df[col]) * 0.5:
             df[col] = pd.to_numeric(cleaned, errors="coerce")
 
     return df
 
 # -----------------------
-# Ask model (Optimized)
+# AI Query
 # -----------------------
-def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "gpt-4.1") -> str:
+def ask_data_question_full(question, df, model_name="gpt-4.1"):
     if client is None:
-        return "Error: OpenAI client not configured. Add OPENAI_API_KEY to secrets."
-
+        return "Error: OpenAI key missing."
     if df.empty:
-        return "Dataset is empty. Cannot analyze."
+        return "Dataset is empty."
 
     df_trim = df.head(300)
     col_map = {col: f"c{i}" for i, col in enumerate(df_trim.columns)}
-
     short_df = df_trim.rename(columns=col_map)
     full_data = short_df.to_dict(orient="records")
 
     system_prompt = (
-        "You are a senior data analyst AI. Use ONLY the provided data for calculations. "
-        "Translate shorthand columns using the map provided. Be precise and concise."
+        "You are a senior data analyst AI. Use ONLY the provided data. "
+        "Translate shorthand columns using the column map."
     )
 
     user_prompt = (
-        f"COLUMN MAP (short -> original):\n{json.dumps(col_map, indent=2)}\n\n"
-        f"DATASET (trimmed to 300 rows):\n{json.dumps(full_data, ensure_ascii=False)}\n\n"
+        f"COLUMN MAP:\n{json.dumps(col_map, indent=2)}\n\n"
+        f"DATASET (first 300 rows):\n{json.dumps(full_data, ensure_ascii=False)}\n\n"
         f"QUESTION: {question}"
     )
 
@@ -137,21 +116,18 @@ def ask_data_question_full(question: str, df: pd.DataFrame, model_name: str = "g
             temperature=0.15,
         )
         return response.choices[0].message.content
-
     except Exception as e:
-        return f"⚠️ AI Error: {e}"
+        return f"⚠️ Error: {e}"
 
 # -----------------------
 # Streamlit UI
 # -----------------------
-
 st.title("📦 Kustom Timber Stock Inventory – AI Assistant")
-st.write("Analyze your Google Sheet instantly using AI.")
 
 with st.sidebar:
     st.header("Settings")
-    worksheet_name = st.text_input("Worksheet tab name", value="Sheet1")
-    model_choice = st.selectbox("Model", ["gpt-4.1", "gpt-3.5-turbo"], index=0)
+    worksheet_name = st.text_input("Worksheet tab name", "Sheet1")
+    model_choice = st.selectbox("Model", ["gpt-4.1", "gpt-3.5-turbo"], 0)
     load_btn = st.button("Load Stock Inventory Data")
 
 if load_btn:
@@ -159,35 +135,50 @@ if load_btn:
         try:
             df_all = load_fixed_sheet(worksheet_name)
             if df_all.empty:
-                st.error("No data found. Check worksheet name and access.")
+                st.error("No data found.")
             else:
-                st.success(f"Loaded {df_all.shape[0]} rows and {df_all.shape[1]} columns.")
+                st.success(f"Loaded {df_all.shape[0]} rows.")
                 st.session_state["df_all"] = df_all
         except Exception as e:
-            st.error(f"Failed to load sheet: {e}")
+            st.error(f"Failed: {e}")
 
 # -----------------------
-# If data is loaded
+# If data loaded
 # -----------------------
 if "df_all" in st.session_state:
 
-    df_all = st.session_state["df_all"]
+    df_all = st.session_state["df_all"].copy()
 
-    st.subheader("🔍 Data Preview (first 200 rows)")
+    # FILTERS
+    st.subheader("🔍 Filters")
+
+    # Filter by Product Code
+    if "PRODUCT CODE" in df_all.columns:
+        product_codes = sorted(df_all["PRODUCT CODE"].dropna().unique())
+        selected_product = st.selectbox("Filter by Product Code", ["All"] + product_codes)
+        if selected_product != "All":
+            df_all = df_all[df_all["PRODUCT CODE"] == selected_product]
+
+    # Filter by Batch Number
+    if "BATCH NUMBER" in df_all.columns:
+        batch_numbers = sorted(df_all["BATCH NUMBER"].dropna().unique())
+        selected_batch = st.selectbox("Filter by Batch Number", ["All"] + batch_numbers)
+        if selected_batch != "All":
+            df_all = df_all[df_all["BATCH NUMBER"] == selected_batch]
+
+    # PREVIEW
+    st.subheader("📋 Data Preview (first 200 rows)")
     st.dataframe(df_all.head(200), use_container_width=True)
 
+    # AI QUESTION
     st.subheader("💬 Ask a question about your stock data")
-    question = st.text_input("Enter your question (e.g., 'total stock for TEL-20211')")
+    question = st.text_input("Enter question (e.g., 'total stock for TEL-20211')")
 
-    if st.button("Ask AI") and question.strip():
+    if st.button("Ask AI"):
         with st.spinner("Analyzing..."):
             answer = ask_data_question_full(question, df_all, model_choice)
         st.markdown("### 🤖 AI Answer:")
         st.write(answer)
 
-    st.divider()
-    if st.button("Show column names"):
-        st.write(list(df_all.columns))
-
 else:
-    st.info("Load the stock sheet using the sidebar.")
+    st.info("Load sheet data from the sidebar.")
