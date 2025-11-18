@@ -166,11 +166,11 @@ if "df_all" in st.session_state:
             df_all = df_all[df_all["BATCH NUMBER"] == selected_batch]
 
     # PREVIEW
-    st.subheader("📋 Data Preview (first 200 rows)")
+    st.subheader("📋 Data Preview")
     st.dataframe(df_all, use_container_width=True)
 
     # AI QUESTION
-    st.subheader("💬 Ask a question about your stock data")
+    st.subheader("💬 Ask a question about your stock inventory data")
     question = st.text_input("Enter question (e.g., 'total stock for TEL-20211')")
 
     if st.button("Ask AI"):
