@@ -75,7 +75,7 @@ def load_fixed_sheet(worksheet_name="Sheet1"):
         if df[col].astype(str).str.contains(r"[A-Za-z]", regex=True).any():
             continue
         cleaned = df[col].astype(str).str.replace(r"[^0-9.\-]", "", regex=True)
-        numeric_count = cleaned.str.match(r"^-?\d+(\.\d+)?$", regex=True).sum()
+        numeric_count = cleaned.str.match(r"^-?\d+(?:\.\d+)?$").sum()
         if numeric_count > len(df[col]) * 0.5:
             df[col] = pd.to_numeric(cleaned, errors="coerce")
 
