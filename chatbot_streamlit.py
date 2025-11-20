@@ -129,58 +129,82 @@ def ask_sheet(question, df_name):
     prompt = f"""
 You are an expert pandas code generator.
 
-DATAFRAME: {df_name}_df
+DATAFRAME = {df_name}_df
 COLUMNS = {cols}
 
-STRICT RULES:
-1. Only use EXACT column names listed above.
-2. If question mentions date/month, use column 'Month' ONLY.
-3. Never use 'Month Required'.
-4. If question mentions packs → use 'PACKS'.
-5. Final line of code MUST set variable: result
-6. Output ONLY Python code.
+RULES:
+1. Only use column names exactly as shown above.
+2. If question mentions months/dates → USE column 'Month'
+3. DO NOT use 'Month Required' (not present).
+4. If question mentions packs → USE column 'PACKS'
+5. Only return VALID PYTHON CODE.
+6. Final line MUST be:
+       result = <value>
 
-QUESTION:
+USER QUESTION:
 {question}
 """
 
-    # ---- Generate Python code ----
+    # ========================
+    # Step 1 — Ask OpenAI
+    # ========================
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role":"user","content":prompt}]
     )
     ai_code = resp.choices[0].message.content.strip()
 
-    # Fix accidental hallucinations
+    # ========================
+    # Step 2 — Sanitize Code
+    # ========================
+
+    # Replace curly or weird quotes with straight quotes
+    ai_code = ai_code.replace("“", '"').replace("”", '"').replace("’", "'")
+
+    # Replace Month Required hallucination
     ai_code = ai_code.replace("['Month Required']", "['Month']")
+    ai_code = ai_code.replace('["Month Required"]', '["Month"]')
 
-    if "Month Required" in ai_code:
-        return f"❌ Invalid column 'Month Required'. BLOCKED.\n\nCODE:\n{ai_code}"
+    # Remove backticks if AI outputs fenced code blocks
+    ai_code = ai_code.replace("```python", "").replace("```", "").strip()
 
-    # ---- EXECUTE PYTHON CODE SAFELY ----
+    # Force the code to contain `result =`
+    if "result =" not in ai_code:
+        # If the AI forgot a final result, append one
+        ai_code += "\nresult = None"
+
+    print("\n🔧 Sanitized AI Code:\n", ai_code, "\n")
+
+    # ========================
+    # Step 3 — Execute Python
+    # ========================
     try:
         local_vars = {
             "stock_df": stock_df,
             "summary_df": summary_df,
             df_name + "_df": df
         }
-
         exec(ai_code, {}, local_vars)
 
         if "result" not in local_vars:
-            return f"❌ AI did not create variable 'result'.\n\nCODE:\n{ai_code}"
+            return f"❌ AI code did not define `result`.\n\nCODE:\n{ai_code}"
 
         result = local_vars["result"]
 
     except Exception as e:
-        return f"❌ Error running AI code: {e}\n\nCODE:\n{ai_code}"
+        return f"❌ Error running sanitized AI code: {e}\n\nCODE:\n{ai_code}"
 
-    # Format result
-    result_text = (
-        result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
-    )
+    # ========================
+    # Step 4 — Format result
+    # ========================
+    if isinstance(result, (pd.DataFrame, pd.Series)):
+        result_text = result.to_string()
+    else:
+        result_text = str(result)
 
-    # ---- Ask AI to explain the result ----
+    # ========================
+    # Step 5 — Explanation
+    # ========================
     explain_prompt = f"""
 Explain the result clearly.
 
@@ -193,10 +217,11 @@ RESULT:
 
     explanation = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": explain_prompt}]
+        messages=[{"role":"user","content":explain_prompt}]
     ).choices[0].message.content
 
     return explanation
+
 
 
 # ======================================================================
