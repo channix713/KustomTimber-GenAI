@@ -20,7 +20,7 @@ from openai import OpenAI
 # STREAMLIT SETUP
 # ======================================================================
 st.set_page_config(page_title="Inventory Chatbot", layout="wide")
-st.title("📦 Inventory Chatbot — Stock & Summary Sheets (Hybrid JSON Planner)")
+st.title("📦 Kustom Timber Stock Inventory Chatbot")
 
 
 # ======================================================================
