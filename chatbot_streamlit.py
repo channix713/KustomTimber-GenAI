@@ -9,7 +9,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
 
 # ================================================================
 #  LOAD API KEYS (Streamlit Secrets → .env fallback)
@@ -24,20 +23,19 @@ load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 if not OPENAI_API_KEY:
-    st.error("❗ No OpenAI API key found in st.secrets or .env")
+    st.error("❗ No OpenAI API key found.")
     st.stop()
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 MODEL = "gpt-4.1-mini"
 
-# Load Google service credentials
+# Google service account JSON
 GCP_JSON_STRING = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON", os.getenv("GCP_SERVICE_ACCOUNT_JSON"))
 if not GCP_JSON_STRING:
-    st.error("❗ Missing Google service account credentials")
+    st.error("❗ Missing Google service account JSON.")
     st.stop()
 
 GCP_CREDS = json.loads(GCP_JSON_STRING)
-
 
 # ================================================================
 #  GOOGLE SHEETS AUTH
@@ -70,11 +68,14 @@ def load_sheets():
     stock_df.columns = stock_df.iloc[0].str.strip()
     stock_df = stock_df[1:].reset_index(drop=True)
 
-    # Product Code normalization
+    # Clean ALL columns
+    for col in stock_df.columns:
+        stock_df[col] = stock_df[col].astype(str).str.strip()
+
+    # Product Code → numeric cleanup
     if "Product Code" in stock_df:
         stock_df["Product Code"] = (
             stock_df["Product Code"]
-            .astype(str)
             .str.replace(r"[^0-9]", "", regex=True)
             .str.strip()
         )
@@ -83,9 +84,8 @@ def load_sheets():
     if "Month Required" in stock_df:
         stock_df["Month Required"] = (
             stock_df["Month Required"]
-            .astype(str)
-            .str.strip()
             .str.lower()
+            .str.strip()
         )
 
         month_map = {
@@ -95,29 +95,43 @@ def load_sheets():
         }
 
         def normalize_month(text):
-            parts = text.split()
-            if len(parts) != 2:
+            p = text.split()
+            if len(p) != 2:
                 return text
-            m, y = parts
-            m = m[:3]  # abbreviation
+            m, y = p
+            m = m[:3]
             if m in month_map:
                 m = month_map[m]
             return f"{m} {y}"
 
         stock_df["Month Required"] = stock_df["Month Required"].apply(normalize_month)
 
-    # Packs normalization
+    # Packs → numeric
     if "Packs" in stock_df:
         stock_df["Packs_num"] = (
             stock_df["Packs"]
-            .astype(str)
             .str.replace(r"[^0-9.]", "", regex=True)
         )
         stock_df["Packs_num"] = pd.to_numeric(stock_df["Packs_num"], errors="coerce")
 
-    # Status normalization
+    # Status normalization with alias expansion
     if "Status" in stock_df:
-        stock_df["Status"] = stock_df["Status"].astype(str).str.strip().str.lower()
+
+        def normalize_status(t):
+            t = t.lower().strip()
+
+            invoice_aliases = [
+                "inv", "invo", "invoic", "invoice", "invc",
+                "invoiced", "inv.", "invoicing"
+            ]
+
+            for alias in invoice_aliases:
+                if t == alias or t.startswith(alias):
+                    return "invoiced"
+
+            return t
+
+        stock_df["Status"] = stock_df["Status"].apply(normalize_status)
 
     # ---------------- SUMMARY SHEET ----------------
     summary_ws = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME2)
@@ -126,11 +140,10 @@ def load_sheets():
     summary_df.columns = summary_df.iloc[0].str.strip()
     summary_df = summary_df[1:].reset_index(drop=True)
 
-    # Clean all text columns
     for col in summary_df.columns:
         summary_df[col] = summary_df[col].astype(str).str.strip()
 
-    # Clean numeric columns
+    # Numeric cleanup
     numeric_cols = ["AVAILABLE", "ORDERED", "LANDED", "Invoiced"]
     for col in numeric_cols:
         if col in summary_df:
@@ -142,6 +155,7 @@ def load_sheets():
     return stock_df, summary_df
 
 
+
 # ================================================================
 #  AI QUERY FOR SELECTED SHEET
 # ================================================================
@@ -149,16 +163,16 @@ def ai_query(df, question):
     cols = list(df.columns)
 
     prompt = f"""
-Convert the user's question into a single Python expression
-that runs ONLY on the pandas DataFrame named df.
+Convert the user's question into a single Python expression that runs
+ONLY on the pandas DataFrame named df.
 
-DataFrame Columns:
+Columns:
 {cols}
 
-RULES:
+Rules:
 - Use df["COLUMN"] syntax
-- Use *_num columns for numeric operations where available
-- Return ONLY Python code (no explanation, no markdown)
+- Use *_num columns for numeric operations
+- Only return Python code (no commentary, no markdown)
 - Do NOT reference any other dataframe
 - Do NOT merge anything
 - Code must return a scalar, Series, or DataFrame
@@ -176,7 +190,7 @@ User question:
     except Exception as e:
         return None, None, f"OpenAI error: {e}"
 
-    # Execute safely
+    # Execute code
     try:
         local_vars = {"df": df, "pd": pd, "np": np}
         result = eval(ai_code, {}, local_vars)
@@ -193,12 +207,12 @@ User question:
 # ================================================================
 #  STREAMLIT UI
 # ================================================================
-st.title("📦 Inventory Chatbot (Manual Sheet Selection)")
-st.caption("Choose stock_df or summary_df, and the AI uses only that data.")
+st.title("📦 Inventory Chatbot (Manual Sheet Selection + Status Normalization)")
+st.caption("Ask accurate stock or summary questions. Status normalization ensures correct 'invoiced' matching.")
 
 stock_df, summary_df = load_sheets()
 
-# Pick the sheet
+# User selects the sheet to query
 sheet_choice = st.selectbox(
     "Select which sheet to query:",
     ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
@@ -209,22 +223,27 @@ df = stock_df if sheet_choice.startswith("Stock") else summary_df
 if st.checkbox("Show sheet preview"):
     st.dataframe(df.head(200))
 
+
+# DEBUG
+if st.checkbox("Debug: Show rows for product 20373"):
+    st.dataframe(stock_df[stock_df["Product Code"] == "20373"])
+
 question = st.text_input("Ask a question:")
 
 if st.button("Ask"):
     if not question.strip():
-        st.warning("Please enter a question")
+        st.warning("Please enter a question.")
     else:
         ai_code, result_text, error = ai_query(df, question)
 
         if error:
             st.error(error)
         else:
-            st.subheader("AI Generated Python Code")
+            st.subheader("AI-Generated Python Code")
             st.code(ai_code)
 
             st.subheader("Result")
             st.text(result_text)
 
 st.markdown("---")
-st.caption("🔒 Secrets loaded securely via st.secrets + .env")
+st.caption("🔒 Secrets loaded via st.secrets + .env | Status normalization enabled")
