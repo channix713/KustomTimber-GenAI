@@ -1,6 +1,6 @@
 # ======================================================================
-# STREAMLIT BASED GOOGLE SHEETS CHATBOT (Stock + Summary)
-# With get_google_creds(), OpenAIKey.env loading, and strict AI control
+# STREAMLIT GOOGLE SHEETS CHATBOT (Stock + Summary)
+# With get_google_creds(), strict validator, auto-refresh, case-insensitive
 # ======================================================================
 
 import streamlit as st
@@ -9,6 +9,8 @@ import numpy as np
 import gspread
 import os
 import json
+import re
+import ast
 from pathlib import Path
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
@@ -16,14 +18,14 @@ from google.oauth2.service_account import Credentials
 from openai import OpenAI
 
 # ======================================================================
-#  STREAMLIT PAGE SETUP
+# STREAMLIT SETUP
 # ======================================================================
 st.set_page_config(page_title="Inventory Chatbot", layout="wide")
-st.title("📦 Inventory Chatbot (Stock + Summary Sheets)")
+st.title("📦 Inventory Chatbot — Stock & Summary Sheets")
 
 
 # ======================================================================
-#  LOAD OPENAI API KEY (Your required method)
+# LOAD OPENAI KEY (your required method)
 # ======================================================================
 try:
     ENV_PATH = Path(__file__).parent / "OpenAIKey.env"
@@ -33,9 +35,8 @@ except NameError:
 load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
-
 if not OPENAI_API_KEY:
-    st.error("❌ OPENAI_API_KEY missing in secrets or .env")
+    st.error("❌ Missing OPENAI_API_KEY in secrets or .env")
     st.stop()
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -43,18 +44,17 @@ MODEL = "gpt-4.1-mini"
 
 
 # ======================================================================
-#  GOOGLE SHEETS AUTH — Using get_google_creds()
+# GOOGLE CREDS
 # ======================================================================
-
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
 def get_google_creds():
-    """Load GCP service account from Streamlit secrets."""
+    """Load credentials from Streamlit Secrets."""
     if "GOOGLE_SERVICE_ACCOUNT_JSON" not in st.secrets:
-        st.error("❌ Missing GOOGLE_SERVICE_ACCOUNT_JSON in secrets.")
+        st.error("❌ GOOGLE_SERVICE_ACCOUNT_JSON missing in secrets.")
         st.stop()
     try:
         info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
@@ -69,47 +69,55 @@ drive_service = build("drive", "v3", credentials=creds)
 
 
 # ======================================================================
-#  SHEET CONFIG
+# SHEET CONFIG
 # ======================================================================
 SPREADSHEET_ID = "1UG_N-zkgwCpObWTgmg8EPS7-N08aqintu8h3kN8yRmM"
-WORKSHEET_NAME = "Stock"
-WORKSHEET_NAME2 = "Summary"
+WS_STOCK = "Stock"
+WS_SUMMARY = "Summary"
 
 
 # ======================================================================
-#  LOAD SHEETS (with caching)
+# AUTO-REFRESH / MANUAL REFRESH
+# ======================================================================
+def refresh_sheets():
+    st.cache_data.clear()
+    st.success("🔄 Google Sheets refreshed successfully!")
+    st.stop()
+
+if st.button("🔄 Refresh Sheets Now"):
+    refresh_sheets()
+
+
+# ======================================================================
+# LOAD SHEETS
 # ======================================================================
 @st.cache_data(show_spinner=True)
 def load_sheets():
-    # --- LOAD STOCK ---
-    ws = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+    # STOCK
+    ws = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_STOCK)
     stock_df = pd.DataFrame(ws.get_all_values())
     stock_df.columns = stock_df.iloc[0].str.strip()
     stock_df = stock_df[1:].reset_index(drop=True)
     stock_df.replace(r'^\s*$', np.nan, regex=True, inplace=True)
-    stock_df.dropna(how="all", inplace=True)
 
-    # Convert numeric columns
+    # Convert numeric fields
     for col in ["Product Code", "PACKS"]:
-        if col in stock_df.columns:
+        if col in stock_df:
             stock_df[col] = pd.to_numeric(stock_df[col], errors="coerce")
 
-    # --- LOAD SUMMARY ---
-    ws2 = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME2)
+    # SUMMARY
+    ws2 = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_SUMMARY)
     summary_df = pd.DataFrame(ws2.get_all_values())
     summary_df.columns = summary_df.iloc[0].str.strip()
     summary_df = summary_df[1:].reset_index(drop=True)
     summary_df.replace(r'^\s*$', np.nan, regex=True, inplace=True)
-    summary_df.dropna(how="all", inplace=True)
 
-    summary_numeric_cols = [
-        "COST", "PACK SIZE", "ORDERED", "LANDED", "Shipped",
-        "SOH (DC)", "Packs (DC)", "Invoiced", "AVAILABLE",
-        "SOH + SOO", "SOO COST", "SOH COST"
+    summary_numeric = [
+        "COST","PACK SIZE","ORDERED","LANDED","Shipped","SOH (DC)","Packs (DC)",
+        "Invoiced","AVAILABLE","SOH + SOO","SOO COST","SOH COST"
     ]
-
-    for col in summary_numeric_cols:
-        if col in summary_df.columns:
+    for col in summary_numeric:
+        if col in summary_df:
             summary_df[col] = pd.to_numeric(summary_df[col], errors="coerce")
 
     return stock_df, summary_df
@@ -119,9 +127,48 @@ stock_df, summary_df = load_sheets()
 
 
 # ======================================================================
-#  AI ENGINE (strict, safe, multi-line execution)
+# STRICT VALIDATOR
+# ======================================================================
+FORBIDDEN = ["import", "open(", "os.", "sys.", "subprocess", "__", "eval", "exec"]
+
+def extract_columns(code_text):
+    """Extract columns used inside df['col'] or df["col"] patterns."""
+    pattern = r'\[\s*[\'"]([^\'"]+)[\'"]\s*\]'
+    return re.findall(pattern, code_text)
+
+def validate_ai_code(ai_code: str, df_columns):
+    """Strict security + correctness validation."""
+    # Block forbidden keywords
+    for bad in FORBIDDEN:
+        if bad in ai_code:
+            return False, f"Forbidden keyword detected: {bad}"
+
+    # Must define result =
+    if not re.search(r"result\s*=", ai_code):
+        return False, "Missing required: result ="
+
+    # Python syntax validation
+    try:
+        ast.parse(ai_code)
+    except Exception as e:
+        return False, f"Syntax error: {e}"
+
+    # Column validation (case-insensitive)
+    df_cols_lower = [c.lower() for c in df_columns]
+    for col in extract_columns(ai_code):
+        if col.lower() not in df_cols_lower:
+            return False, f"Invalid column used: '{col}'"
+
+    return True, "OK"
+
+
+# ======================================================================
+# AI ENGINE
 # ======================================================================
 def ask_sheet(question, df_name):
+
+    # CASE-INSENSITIVE NORMALIZATION
+    question_normalized = question.lower()
 
     df = stock_df if df_name == "stock" else summary_df
     cols = list(df.columns)
@@ -132,52 +179,39 @@ You are an expert pandas code generator.
 DATAFRAME = {df_name}_df
 COLUMNS = {cols}
 
-RULES:
-1. Only use column names exactly as shown above.
-2. If question mentions months/dates → USE column 'Month'
-3. DO NOT use 'Month Required' (not present).
-4. If question mentions packs → USE column 'PACKS'
-5. Only return VALID PYTHON CODE.
-6. Final line MUST be:
+STRICT RULES:
+1. Only use EXACT column names shown above (case-insensitive allowed).
+2. For date/month filters → use 'Month'
+3. DO NOT use 'Month Required'
+4. For pack-related questions → always use 'PACKS'
+5. Return ONLY valid python code.
+6. Final line must set:
        result = <value>
 
 USER QUESTION:
-{question}
+{question_normalized}
 """
 
-    # ========================
-    # Step 1 — Ask OpenAI
-    # ========================
+    # Ask AI
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role":"user","content":prompt}]
+        messages=[{"role": "user", "content": prompt}]
     )
     ai_code = resp.choices[0].message.content.strip()
 
-    # ========================
-    # Step 2 — Sanitize Code
-    # ========================
-
-    # Replace curly or weird quotes with straight quotes
+    # Sanitize quotes + remove fenced code
     ai_code = ai_code.replace("“", '"').replace("”", '"').replace("’", "'")
+    ai_code = ai_code.replace("```python", "").replace("```", "")
 
     # Replace Month Required hallucination
     ai_code = ai_code.replace("['Month Required']", "['Month']")
-    ai_code = ai_code.replace('["Month Required"]', '["Month"]')
 
-    # Remove backticks if AI outputs fenced code blocks
-    ai_code = ai_code.replace("```python", "").replace("```", "").strip()
+    # VALIDATE CODE
+    ok, msg = validate_ai_code(ai_code, df.columns)
+    if not ok:
+        return f"❌ AI Code Validation Failed:\n{msg}\n\nCODE:\n{ai_code}"
 
-    # Force the code to contain `result =`
-    if "result =" not in ai_code:
-        # If the AI forgot a final result, append one
-        ai_code += "\nresult = None"
-
-    print("\n🔧 Sanitized AI Code:\n", ai_code, "\n")
-
-    # ========================
-    # Step 3 — Execute Python
-    # ========================
+    # EXECUTE CODE
     try:
         local_vars = {
             "stock_df": stock_df,
@@ -185,28 +219,18 @@ USER QUESTION:
             df_name + "_df": df
         }
         exec(ai_code, {}, local_vars)
-
-        if "result" not in local_vars:
-            return f"❌ AI code did not define `result`.\n\nCODE:\n{ai_code}"
-
         result = local_vars["result"]
-
     except Exception as e:
-        return f"❌ Error running sanitized AI code: {e}\n\nCODE:\n{ai_code}"
+        return f"❌ Error executing AI code: {e}\n\nCODE:\n{ai_code}"
 
-    # ========================
-    # Step 4 — Format result
-    # ========================
-    if isinstance(result, (pd.DataFrame, pd.Series)):
-        result_text = result.to_string()
-    else:
-        result_text = str(result)
+    # Format result
+    result_text = (
+        result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
+    )
 
-    # ========================
-    # Step 5 — Explanation
-    # ========================
+    # Ask AI to explain result
     explain_prompt = f"""
-Explain the result clearly.
+Explain this result clearly.
 
 QUESTION:
 {question}
@@ -214,38 +238,31 @@ QUESTION:
 RESULT:
 {result_text}
 """
-
     explanation = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role":"user","content":explain_prompt}]
+        messages=[{"role": "user", "content": explain_prompt}]
     ).choices[0].message.content
 
     return explanation
 
 
-
 # ======================================================================
-#  STREAMLIT UI
+# UI
 # ======================================================================
-st.subheader("Select which sheet to query")
-sheet_choice = st.selectbox(
-    "Choose sheet:",
-    ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
-)
+st.subheader("Choose Sheet to Query")
+sheet_choice = st.selectbox("Sheet:", ["Stock Sheet", "Summary Sheet"])
 
-df_name = "stock" if sheet_choice.startswith("Stock") else "summary"
+df_name = "stock" if sheet_choice == "Stock Sheet" else "summary"
 df_selected = stock_df if df_name == "stock" else summary_df
 
-if st.checkbox("Show dataframe"):
+if st.checkbox("Show DataFrame Preview"):
     st.dataframe(df_selected, use_container_width=True)
 
-st.subheader("Ask a question:")
-question = st.text_input("Enter your question")
+question = st.text_input("Ask your question (case-insensitive):")
 
 if st.button("Ask"):
     if not question.strip():
-        st.warning("Enter a question before clicking Ask.")
+        st.warning("Please enter a question.")
     else:
-        response = ask_sheet(question, df_name)
-        st.write("### Chatbot Answer:")
-        st.write(response)
+        st.markdown("### Chatbot Answer:")
+        st.write(ask_sheet(question, df_name))
