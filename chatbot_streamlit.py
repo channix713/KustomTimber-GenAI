@@ -124,9 +124,8 @@ def load_sheets():
         if col in summary_df:
             summary_df[col] = pd.to_numeric(summary_df[col], errors="coerce")
 
-    # Create AVAILABLE_num for consistency
-    if "AVAILABLE" in summary_df:
-        summary_df["AVAILABLE_num"] = pd.to_numeric(summary_df["AVAILABLE"], errors="coerce")
+    # ALWAYS create AVAILABLE_num, even if AVAILABLE missing
+    summary_df["AVAILABLE_num"] = pd.to_numeric(summary_df.get("AVAILABLE", np.nan), errors="coerce")
 
     return stock_df, summary_df
 
@@ -182,42 +181,38 @@ def ask_sheet(question, df_name):
         df_label = "stock_df"
         id_col = "Product Code"
         value_col = "PACKS"
-        forbidden_cols = ["ITEM #", "AVAILABLE", "AVAILABLE_num"]
+        forbidden = ["ITEM #", "AVAILABLE", "AVAILABLE_num"]
     else:
         df = summary_df
         df_label = "summary_df"
         id_col = "ITEM #"
         value_col = "AVAILABLE_num"
-        forbidden_cols = ["Product Code", "PACKS", "Month"]
+        forbidden = ["Product Code", "PACKS", "Month"]
 
     cols = list(df.columns)
 
-    # ---- AI PROMPT ----
     prompt = f"""
 You are an expert pandas code generator.
 
-You are working ONLY with this dataframe:
+You work ONLY with this dataframe:
 
-DATAFRAME NAME: {df_label}
+DATAFRAME: {df_label}
 COLUMNS: {cols}
 
-You MUST follow these rules:
-
-1. ONLY use the dataframe {df_label}.
-2. Product ID column = "{id_col}"
-3. Main numeric column = "{value_col}"
-4. Forbidden columns (NEVER use):
-   {forbidden_cols}
-5. Use EXACT column names as shown above.
-6. Final line MUST be:
-       result = <value>
-7. Output ONLY python code (no explanations).
+MANDATORY RULES:
+- Use ONLY {df_label}, never any other dataframe.
+- Product ID column = "{id_col}"
+- Main numeric column = "{value_col}"
+- Forbidden columns: {forbidden}
+- Use EXACT column names shown.
+- Final line MUST be: result = <value>
+- Output ONLY Python code.
 
 QUESTION:
 {q}
 """
 
-    # --- AI GENERATES PYTHON ---
+    # --- AI ---
     resp = client.chat.completions.create(
         model=MODEL,
         messages=[{"role":"user","content":prompt}]
@@ -226,33 +221,36 @@ QUESTION:
 
     # CLEAN CODE
     ai_code = (
-        ai_code.replace("```python", "")
-               .replace("```", "")
-               .replace("“", '"')
-               .replace("”", '"')
-               .replace("’", "'")
+        ai_code.replace("```python","")
+               .replace("```","")
+               .replace("“",'"')
+               .replace("”",'"')
+               .replace("’","'")
                .strip()
     )
 
-    # VALIDATION
+    # VALIDATE
     ok, msg = validate_ai_code(ai_code, df.columns)
     if not ok:
         return f"❌ AI Code Validation Failed:\n{msg}\n\nCODE:\n{ai_code}"
 
     # EXECUTE
     try:
-        local_vars = {df_label: df}
-        exec(ai_code, {}, local_vars)
-        result = local_vars["result"]
+        exec_locals = {df_label: df}
+        exec(ai_code, {}, exec_locals)
+        result = exec_locals["result"]
     except Exception as e:
         return f"❌ Error executing AI code: {e}\n\nCODE:\n{ai_code}"
 
-    # FORMAT
-    result_text = result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
+    # FORMAT RESULT
+    result_text = (
+        result.to_string() if isinstance(result,(pd.DataFrame,pd.Series)) 
+        else str(result)
+    )
 
     # EXPLAIN
     explain_prompt = f"""
-Explain this result clearly:
+Explain clearly:
 
 QUESTION:
 {question}
@@ -268,8 +266,10 @@ RESULT:
     return explanation
 
 
+# DEBUG – SHOW SUMMARY COLUMNS
 st.subheader("🔎 Debug Columns")
 st.write("Summary_df columns:", list(summary_df.columns))
+
 
 # ======================================================================
 # UI
