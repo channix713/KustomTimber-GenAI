@@ -12,9 +12,17 @@ from google.oauth2 import service_account
 
 
 # ================================================================
+#  AUTO REFRESH (EVERY 30 SECONDS)
+# ================================================================
+try:
+    st.autorefresh(interval=30000, key="auto_refresh")  # 30 seconds
+except:
+    pass
+
+
+# ================================================================
 #  SECURE KEY LOADING
 # ================================================================
-
 try:
     ENV_PATH = Path(__file__).parent / "OpenAIKey.env"
 except NameError:
@@ -52,13 +60,13 @@ def google_auth():
 
 
 # ================================================================
-#  LOAD AND CLEAN SHEETS
+#  LOAD AND CLEAN SHEETS — AUTO REFRESH EVERY 60s
 # ================================================================
 SPREADSHEET_ID = "1UG_N-zkgwCpObWTgmg8EPS7-N08aqintu8h3kN8yRmM"
 WORKSHEET_NAME = "Stock"
 WORKSHEET_NAME2 = "Summary"
 
-@st.cache_data(show_spinner=True)
+@st.cache_data(show_spinner=True, ttl=60)  # Auto-refresh cache every 60 seconds
 def load_sheets():
     gc = google_auth()
 
@@ -91,9 +99,7 @@ def load_sheets():
     if date_col:
         stock_df[date_col] = pd.to_datetime(stock_df[date_col], errors="coerce")
         stock_df["MonthNorm"] = (
-            stock_df[date_col]
-            .dt.strftime("%B %Y")
-            .str.lower()
+            stock_df[date_col].dt.strftime("%B %Y").str.lower()
         )
 
     # Packs cleanup
@@ -110,7 +116,6 @@ def load_sheets():
         def normalize_status(t):
             t = t.lower().strip()
             aliases = ["inv", "invo", "invoice", "invoiced", "invc", "inv.", "invoicing"]
-
             for a in aliases:
                 if t == a or t.startswith(a):
                     return "invoiced"
@@ -128,39 +133,46 @@ def load_sheets():
     for col in summary_df.columns:
         summary_df[col] = summary_df[col].astype(str).str.strip()
 
-    # Numeric cleanup for summary sheet
+    # Numeric cleanup
     numeric_cols = ["AVAILABLE", "ORDERED", "LANDED", "Invoiced"]
     for col in numeric_cols:
         if col in summary_df:
-            summary_df[col + "_num"] = (
-                summary_df[col].str.replace(r"[^0-9.]", "", regex=True)
-            )
+            summary_df[col + "_num"] = summary_df[col].str.replace(r"[^0-9.]", "", regex=True)
             summary_df[col + "_num"] = pd.to_numeric(summary_df[col + "_num"], errors="coerce")
 
     return stock_df, summary_df
 
 
 # ================================================================
-#  AI QUERY (operates ONLY on selected dataframe)
+#  MANUAL REFRESH BUTTON
+# ================================================================
+st.write(" ")
+if st.button("🔄 Refresh Google Sheets Now"):
+    st.cache_data.clear()
+    st.success("Google Sheets data refreshed!")
+    st.experimental_rerun()
+
+
+# ================================================================
+#  AI QUERY ENGINE
 # ================================================================
 def ai_query(df, question):
     cols = list(df.columns)
 
     prompt = f"""
 Convert the user's question into a single Python expression using ONLY 
-this pandas DataFrame named df.
+the DataFrame named df.
 
 Columns available:
 {cols}
 
 Rules:
 - Use df["column"] syntax.
-- Use *_num columns for numeric fields.
-- Use df["MonthNorm"] for month filtering.
-- Use df["Status"] for status (already normalized).
-- Only return Python code. No text, markdown, or commentary.
-- Do NOT reference any other dataframe.
-- Code must return a scalar, Series, or DataFrame.
+- Use *_num numeric columns.
+- Use MonthNorm for month filtering.
+- Use Status for status filtering.
+- Return ONLY code. No markdown or explanation.
+- Must return a scalar, Series, or DataFrame.
 
 User question:
 {question}
@@ -169,33 +181,30 @@ User question:
     try:
         resp = client.chat.completions.create(
             model=MODEL,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
         )
         ai_code = resp.choices[0].message.content.strip()
     except Exception as e:
         return None, None, f"OpenAI error: {e}"
 
-    # Execute safely
     try:
-        local_vars = {"df": df, "pd": pd, "np": np}
-        result = eval(ai_code, {}, local_vars)
+        result = eval(ai_code, {"df": df, "pd": pd, "np": np}, {})
     except Exception as e:
         return ai_code, None, f"Execution error: {e}"
 
-    # Format display
-    result_text = (
-        result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
-    )
+    if isinstance(result, (pd.DataFrame, pd.Series)):
+        result_text = result.to_string()
+    else:
+        result_text = str(result)
+
     return ai_code, result_text, None
 
 
 # ================================================================
 #  STREAMLIT UI
 # ================================================================
-st.title("📦 Inventory Chatbot — Stock & Summary Sheets")
-st.caption("Now fully supports date-based month filtering (MonthNorm), invoice status normalization, and manual sheet selection.")
+st.title("📦 Inventory Chatbot — Live Updating")
+st.caption("Auto-refresh enabled. Google Sheets updates appear every 30–60s.")
 
 stock_df, summary_df = load_sheets()
 
@@ -209,75 +218,50 @@ df = stock_df if sheet_choice.startswith("Stock") else summary_df
 if st.checkbox("Show sheet preview"):
     st.dataframe(df.head(200))
 
+
 # ================================================================
-# DEBUG BLOCK — HELPS US SEE WHY YOU GET ZERO
+#  DEBUG PANEL
 # ================================================================
 if st.checkbox("🔍 DEBUG — Show rows for Product Code 20373"):
-    st.subheader("🔎 All rows for Product Code 20373 in Stock Sheet")
+    st.subheader("Rows for Product Code 20373")
 
-    if "Product Code" in stock_df.columns:
-        debug_rows = stock_df[stock_df["Product Code"] == "20373"]
+    debug_rows = stock_df[stock_df["Product Code"] == "20373"]
+    st.dataframe(debug_rows)
 
-        st.write("All rows where Product Code == 20373:")
-        st.dataframe(debug_rows)
+    st.write("MonthNorm values:", debug_rows["MonthNorm"].unique())
+    st.write("Status values:", debug_rows["Status"].unique())
 
-        # Show Date Required values
-        date_cols = [c for c in stock_df.columns if "date" in c.lower()]
-        if date_cols:
-            st.write("Date columns found:", date_cols)
-            st.dataframe(debug_rows[date_cols])
+    st.write("Rows where MonthNorm == 'november 2025'")
+    st.dataframe(debug_rows[debug_rows["MonthNorm"] == "november 2025"])
 
-        # Show month normalization results
-        if "MonthNorm" in stock_df.columns:
-            st.write("Unique MonthNorm values for this product:")
-            st.write(debug_rows["MonthNorm"].unique())
+    st.write("Rows where Status == 'invoiced'")
+    st.dataframe(debug_rows[debug_rows["Status"] == "invoiced"])
 
-            st.write("Rows where MonthNorm == 'november 2025':")
-            st.dataframe(debug_rows[debug_rows["MonthNorm"] == "november 2025"])
-
-        # Show status values
-        if "Status" in stock_df.columns:
-            st.write("Unique Status values for this product:")
-            st.write(debug_rows["Status"].unique())
-
-            st.write("Rows where Status == 'invoiced':")
-            st.dataframe(debug_rows[debug_rows["Status"] == "invoiced"])
-
-        # Final combined filter
-        st.write("Rows matching ALL conditions:")
-        st.dataframe(
-            debug_rows[
-                (debug_rows["MonthNorm"] == "november 2025") &
-                (debug_rows["Status"] == "invoiced")
-            ]
-        )
-    else:
-        st.error("No 'Product Code' column found in stock_df.")
+    st.write("Rows matching ALL conditions:")
+    st.dataframe(
+        debug_rows[
+            (debug_rows["MonthNorm"] == "november 2025") &
+            (debug_rows["Status"] == "invoiced")
+        ]
+    )
 
 
-
-# DEBUG
-if st.checkbox("Debug product 20373 in Stock Sheet"):
-    if "Product Code" in stock_df:
-        st.dataframe(stock_df[stock_df["Product Code"] == "20373"])
-
-
+# ================================================================
+#  QUESTION INPUT + AI EXECUTION
+# ================================================================
 question = st.text_input("Ask your question:")
 
 if st.button("Ask"):
-    if not question.strip():
-        st.warning("Please enter a question.")
+    ai_code, result_text, error = ai_query(df, question)
+
+    if error:
+        st.error(error)
     else:
-        ai_code, result_text, error = ai_query(df, question)
+        st.subheader("AI-Generated Python Code")
+        st.code(ai_code)
 
-        if error:
-            st.error(error)
-        else:
-            st.subheader("AI-Generated Python Code")
-            st.code(ai_code)
-
-            st.subheader("Result")
-            st.text(result_text)
+        st.subheader("Result")
+        st.text(result_text)
 
 st.markdown("---")
-st.caption("🔐 Secure Secrets | ✔ MonthNorm | ✔ Status Normalized | ✔ Manual Sheet Selection")
+st.caption("🔐 Secure Secrets | 🔄 Auto-Refresh | ✔ Live Google Sheet Sync")
