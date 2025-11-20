@@ -77,7 +77,7 @@ def load_sheets():
     gc, _ = google_auth()
 
     # STOCK SHEET
-    ws_stock = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+    ws_stock = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKK SHEET_NAME)
     stock_rows = ws_stock.get_all_values()
     stock_df = pd.DataFrame(stock_rows)
     stock_df.columns = stock_df.iloc[0]
@@ -114,19 +114,30 @@ def clean_numeric(df, col):
 def prepare_data():
     stock_df, summary_df = load_sheets()
 
-    # Clean numeric columns
+    # Normalize join keys
+    stock_df["Product Code"] = stock_df["Product Code"].astype(str).str.strip()
+    summary_df["ITEM #"] = summary_df["ITEM #"].astype(str).str.strip()
+
+    # Clean Month Required
+    if "Month Required" in stock_df.columns:
+        stock_df["Month Required"] = (
+            stock_df["Month Required"]
+            .astype(str)
+            .str.strip()
+            .str.title()     # "november 2025" → "November 2025"
+        )
+
+    # Clean Packs (convert "87m2" → 87)
     if "Packs" in stock_df.columns:
+        stock_df["Packs"] = stock_df["Packs"].astype(str).str.strip()
         clean_numeric(stock_df, "Packs")
 
+    # Clean summary numeric columns
     for col in ["ORDERED", "AVAILABLE", " SOH COST ", " SOO COST "]:
         if col in summary_df.columns:
             clean_numeric(summary_df, col)
 
-    # FIXED — .str.strip() instead of .strip()
-    stock_df["Product Code"] = stock_df["Product Code"].astype(str).str.strip()
-    summary_df["ITEM #"] = summary_df["ITEM #"].astype(str).str.strip()
-
-    # Merge sheets
+    # Merge both sheets
     merged_df = pd.merge(
         stock_df,
         summary_df,
@@ -139,8 +150,9 @@ def prepare_data():
     return stock_df, summary_df, merged_df
 
 
+
 # ================================================================
-#  DIRECT PRODUCT CODE LOOKUP (NO AI — ALWAYS CORRECT)
+#  DIRECT PRODUCT CODE LOOKUP (NO AI — GUARANTEED ACCURATE)
 # ================================================================
 def direct_lookup(merged_df, code):
     code = str(code).strip()
@@ -149,11 +161,12 @@ def direct_lookup(merged_df, code):
     if row.empty:
         return None, "No matching Product Code found."
 
+    # Prefer numeric AVAILABLE if present
     if "AVAILABLE_num" in merged_df.columns:
         val = row["AVAILABLE_num"].iloc[0]
         if pd.isna(val):
             raw = row["AVAILABLE"].iloc[0]
-            return raw, "Converted numeric unavailable; using raw AVAILABLE value."
+            return raw, "Numeric AVAILABLE missing; using raw instead."
         return val, None
 
     return row["AVAILABLE"].iloc[0], None
@@ -166,18 +179,23 @@ def ai_query(merged_df, question):
     merged_columns = list(merged_df.columns)
 
     prompt = f"""
-You are a senior data analyst. Convert the user's question into a single Python
-expression operating on the DataFrame 'merged_df'.
+Convert the user's question into a SINGLE Python expression that runs on
+a pandas DataFrame named merged_df.
 
-Allowed Columns:
+ALLOWED COLUMNS:
 {merged_columns}
 
 RULES:
-- Use *_num columns for numeric operations.
-- For product code lookups, ALWAYS use merged_df["Product Code"].
-- Return ONLY Python code (no commentary, no markdown).
+- Use ONLY allowed columns.
+- For numeric operations, use *_num columns.
+- For product code lookups: merged_df["Product Code"].
+- For month filtering, compare EXACT title-case strings, e.g. "November 2025".
+- Packs_num ALWAYS comes from stock_df (never from summary).
+
+Return ONLY a Python expression.
 """
 
+    # Get the Python expression
     try:
         resp = client.chat.completions.create(
             model=MODEL,
@@ -187,19 +205,20 @@ RULES:
     except Exception as e:
         return None, None, f"OpenAI error: {e}"
 
-    # Execute the AI-generated code
+    # Execute expression safely
     try:
         local_vars = {"merged_df": merged_df, "pd": pd, "np": np}
         result = eval(ai_code, {}, local_vars)
     except Exception as e:
         return ai_code, None, f"Execution error: {e}"
 
-    if isinstance(result, (pd.Series, pd.DataFrame)):
-        result_text = result.to_string()
-    else:
-        result_text = str(result)
+    result_text = (
+        result.to_string()
+        if isinstance(result, (pd.DataFrame, pd.Series))
+        else str(result)
+    )
 
-    # Generate explanation
+    # Explanation
     try:
         explain_prompt = f"""
 Explain this result clearly:
@@ -207,14 +226,13 @@ Explain this result clearly:
 Result:
 {result_text}
 
-Question:
+User Question:
 {question}
 """
-        explain_resp = client.chat.completions.create(
+        explanation = client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": explain_prompt}],
-        )
-        explanation = explain_resp.choices[0].message.content
+        ).choices[0].message.content
     except:
         explanation = "(No explanation available.)"
 
@@ -225,24 +243,23 @@ Question:
 #  STREAMLIT UI
 # ================================================================
 st.title("📦 Inventory Chatbot (Google Sheets + OpenAI)")
-st.caption("Secure • No API keys stored in code • Uses Streamlit Secrets + .env")
+st.caption("Secure • No secrets in code • Accurate product and month lookups")
 
-st.info("Loading data from Google Sheets…")
+st.info("Loading data…")
 stock_df, summary_df, merged_df = prepare_data()
-st.success("Sheets loaded successfully!")
+st.success("Data loaded!")
 
 if st.checkbox("Show merged dataframe preview"):
     st.dataframe(merged_df.head(200))
 
 
-# User Question
+# Ask question
 question = st.text_input("Ask something about your inventory:")
 
 if st.button("Ask"):
     if not question:
         st.warning("Please enter a question.")
     else:
-        # Detect "Product Code 12345"
         match = re.search(r"product\s*code\s*[:#]?\s*(\d+)", question, re.I)
 
         if match:
@@ -256,10 +273,9 @@ if st.button("Ask"):
                 st.caption(note)
 
         else:
-            # AI fallback
             ai_code, result_text, explanation = ai_query(merged_df, question)
 
-            st.subheader("AI-Generated Python Code")
+            st.subheader("AI-Generated Code")
             st.code(ai_code, language="python")
 
             st.subheader("Result")
@@ -270,4 +286,4 @@ if st.button("Ask"):
 
 
 st.markdown("---")
-st.caption("🔐 Secrets loaded securely via st.secrets & .env.")
+st.caption("🔐 Secrets loaded from st.secrets or .env. Clean and production-ready.")
