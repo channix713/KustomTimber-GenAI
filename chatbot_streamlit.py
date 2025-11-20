@@ -77,7 +77,7 @@ def load_sheets():
     gc, _ = google_auth()
 
     # STOCK SHEET
-    ws_stock = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKK SHEET_NAME)
+    ws_stock = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
     stock_rows = ws_stock.get_all_values()
     stock_df = pd.DataFrame(stock_rows)
     stock_df.columns = stock_df.iloc[0]
@@ -93,6 +93,7 @@ def load_sheets():
     summary_df = summary_df.replace(r"^\s*$", np.nan, regex=True).dropna(how="all")
 
     return stock_df, summary_df
+
 
 
 # ================================================================
