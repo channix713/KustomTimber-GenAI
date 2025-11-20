@@ -13,9 +13,10 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 # ================================================================
-#  SECURE KEY LOADING (st.secrets → fallback to .env)
+#  SECURE KEY LOADING
 # ================================================================
 
+# Load local .env if available
 try:
     ENV_PATH = Path(__file__).parent / "OpenAIKey.env"
 except NameError:
@@ -31,14 +32,14 @@ if not OPENAI_API_KEY:
 client = OpenAI(api_key=OPENAI_API_KEY)
 MODEL = "gpt-4.1-mini"
 
-
-# GOOGLE CREDS
+# Google service account
 GCP_JSON_STRING = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON", os.getenv("GCP_SERVICE_ACCOUNT_JSON"))
 if not GCP_JSON_STRING:
     st.error("❗ Missing Google service account JSON")
     st.stop()
 
 GCP_CREDS = json.loads(GCP_JSON_STRING)
+
 
 # ================================================================
 #  GOOGLE SHEETS AUTH
@@ -51,7 +52,8 @@ def google_auth():
     creds = service_account.Credentials.from_service_account_info(GCP_CREDS, scopes=scopes)
     gc = gspread.authorize(creds)
     drive = build("drive", "v3", credentials=creds)
-    return gc, drive
+    return gc
+
 
 # ================================================================
 #  LOAD SHEETS
@@ -62,124 +64,90 @@ WORKSHEET_NAME2 = "Summary"
 
 @st.cache_data(show_spinner=True)
 def load_sheets():
-    gc, _ = google_auth()
+    gc = google_auth()
 
-    # --- STOCK ---
+    # ---- STOCK ----
     stock_ws = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-    srows = stock_ws.get_all_values()
-    stock_df = pd.DataFrame(srows)
+    stock_rows = stock_ws.get_all_values()
+    stock_df = pd.DataFrame(stock_rows)
     stock_df.columns = stock_df.iloc[0]
     stock_df = stock_df[1:].reset_index(drop=True)
     stock_df = stock_df.replace(r"^\s*$", np.nan, regex=True)
 
+    # Normalize Month Required
     if "Month Required" in stock_df:
         stock_df["Month Required"] = (
             stock_df["Month Required"].astype(str).str.strip().str.title()
         )
 
+    # Clean Packs
     if "Packs" in stock_df:
         stock_df["Packs"] = stock_df["Packs"].astype(str).str.strip()
         stock_df["Packs_num"] = (
-            stock_df["Packs"].astype(str).str.replace(r"[^0-9.\-]", "", regex=True)
+            stock_df["Packs"].str.replace(r"[^0-9.\-]", "", regex=True)
         )
         stock_df["Packs_num"] = pd.to_numeric(stock_df["Packs_num"], errors="coerce")
 
-    # --- SUMMARY ---
+    # ---- SUMMARY ----
     summary_ws = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME2)
-    mrows = summary_ws.get_all_values()
-    summary_df = pd.DataFrame(mrows)
+    summary_rows = summary_ws.get_all_values()
+    summary_df = pd.DataFrame(summary_rows)
     summary_df.columns = summary_df.iloc[0]
     summary_df = summary_df[1:].reset_index(drop=True)
     summary_df = summary_df.replace(r"^\s*$", np.nan, regex=True)
 
+    # Clean numeric summary columns
     for col in ["AVAILABLE", "ORDERED", "LANDED", "Invoiced"]:
         if col in summary_df:
-            summary_df[col + "_num"] = summary_df[col].astype(str).str.replace(
-                r"[^0-9.\-]", "", regex=True
+            summary_df[col + "_num"] = (
+                summary_df[col].astype(str).str.replace(r"[^0-9.\-]", "", regex=True)
             )
             summary_df[col + "_num"] = pd.to_numeric(summary_df[col + "_num"], errors="coerce")
 
     return stock_df, summary_df
 
-# ================================================================
-#  DETECT WHICH SHEET TO USE
-# ================================================================
-def detect_sheet(question):
-    q = question.lower()
-
-    stock_keywords = [
-        "pack", "packs", "month required", "job", "product code",
-        "sales person", "job name"
-    ]
-
-    summary_keywords = [
-        "available", "ordered", "landed", "shipped", "invoiced",
-        "category", "item #"
-    ]
-
-    if any(k in q for k in stock_keywords):
-        return "stock"
-
-    if any(k in q for k in summary_keywords):
-        return "summary"
-
-    # If unclear, let AI decide:
-    decision_prompt = f"""
-You must answer ONLY "stock" or "summary".
-
-Which sheet does this question refer to?
-
-Question: "{question}"
-"""
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": decision_prompt}]
-    )
-    return response.choices[0].message.content.strip().lower()
-
 
 # ================================================================
-#  AI QUERY FOR ONE SHEET ONLY
+#  AI QUERY FOR SELECTED SHEET
 # ================================================================
-def ai_query(df, df_name, question):
+def ai_query(df, question):
     cols = list(df.columns)
 
     prompt = f"""
-Convert the user's question into a SINGLE Python expression that runs on:
+Convert the user's question into a SINGLE Python expression using ONLY
+this pandas DataFrame named df.
 
-DataFrame name: df
-Columns: {cols}
+DataFrame Columns:
+{cols}
 
 RULES:
-- ALWAYS return a valid Python expression using df[…]
-- Use *_num columns for numeric operations
-- Do NOT reference any other dataframe
-- Do NOT merge sheets
-- Only operate on the columns shown above
-
-Return ONLY Python code.
+- Use df["COLUMN"] to reference data
+- Use *_num columns for numeric fields
+- Return ONLY Python code (no markdown, no explanation)
+- Do NOT reference other dataframes
+- Do NOT merge dataframes
+- Your code must return a scalar, Series, or DataFrame
 
 User question:
 {question}
 """
 
     try:
-        resp = client.chat.completions.create(
+        response = client.chat.completions.create(
             model=MODEL,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
-        ai_code = resp.choices[0].message.content
+        ai_code = response.choices[0].message.content.strip()
     except Exception as e:
-        return None, None, f"OpenAI error: {e}"
+        return None, None, f"OpenAI Error: {e}"
 
-    # Execute expression
+    # Execute the code
     try:
         local_vars = {"df": df, "pd": pd, "np": np}
         result = eval(ai_code, {}, local_vars)
     except Exception as e:
-        return ai_code, None, f"Execution error: {e}"
+        return ai_code, None, f"Execution Error: {e}"
 
-    # Format output
     result_text = (
         result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
     )
@@ -190,30 +158,31 @@ User question:
 # ================================================================
 #  STREAMLIT UI
 # ================================================================
-st.title("📦 Inventory Chatbot (Choose Sheets Dynamically)")
-st.caption("Uses OpenAI + Google Sheets without merging dataframes.")
+st.title("📦 Inventory Chatbot (Manual Sheet Selection)")
+st.caption("You choose the sheet → AI answers using only that data.")
 
 stock_df, summary_df = load_sheets()
 
-question = st.text_input("Ask something about your inventory:")
+# User selects data source
+sheet_choice = st.selectbox(
+    "Select which sheet to query:",
+    ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
+)
+
+df = stock_df if sheet_choice.startswith("Stock") else summary_df
+
+st.write(f"Using **{sheet_choice}**")
+
+if st.checkbox("Show sheet preview"):
+    st.dataframe(df.head(200))
+
+question = st.text_input("Ask a question about this sheet:")
 
 if st.button("Ask"):
     if not question.strip():
         st.warning("Please enter a question.")
     else:
-        sheet = detect_sheet(question)
-
-        if sheet == "stock":
-            df = stock_df
-        elif sheet == "summary":
-            df = summary_df
-        else:
-            st.error(f"Could not determine sheet: {sheet}")
-            st.stop()
-
-        st.write(f"📝 Using **{sheet}_df** for this question")
-
-        ai_code, result_text, error = ai_query(df, sheet, question)
+        ai_code, result_text, error = ai_query(df, question)
 
         if error:
             st.error(error)
@@ -223,3 +192,6 @@ if st.button("Ask"):
 
             st.subheader("Result")
             st.text(result_text)
+
+st.markdown("---")
+st.caption("🔐 All secrets securely loaded using st.secrets + .env")
