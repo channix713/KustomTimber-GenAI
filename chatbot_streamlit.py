@@ -1,4 +1,4 @@
-# ======================================================================
+    # ======================================================================
 # STREAMLIT GOOGLE SHEETS CHATBOT (Stock + Summary)
 # HYBRID JSON PLANNER VERSION (no exec, no eval)
 # ======================================================================
@@ -528,14 +528,14 @@ st.markdown("### Quick questions")
 
 c1, c2, c3 = st.columns(3)
 with c1:
-    if st.button("AVAILABLE for ITEM # 20373 (Summary)"):
-        st.session_state["preset_question"] = "How many AVAILABLE for ITEM # 20373?"
+    if st.button("how many Ordered packs for 20373 for November 2025?"):
+        st.session_state["preset_question"] = "how many Ordered packs for 20373 for November 2025??"
 with c2:
-    if st.button("PACKS for product 20373 in November 2025 (Stock)"):
-        st.session_state["preset_question"] = "How many PACKS for product code 20373 for month November 2025 with status invoiced?"
+    if st.button("how many Invoiced packs for 20373 for November 2025?"):
+        st.session_state["preset_question"] = "how many Invoiced packs for 20373 for November 2025?"
 with c3:
-    if st.button("Show all rows for product 20373 (Stock)"):
-        st.session_state["preset_question"] = "Show all rows for product code 20373."
+    if st.button("how many Landed packs for 20373 for November 2025?"):
+        st.session_state["preset_question"] = "how many Landed packs for 20373 for November 2025?"
 
 default_q = st.session_state.get("preset_question", "")
 question = st.text_input("Ask your question (case-insensitive):", value=default_q)
