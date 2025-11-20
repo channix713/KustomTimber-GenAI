@@ -1,9 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[20]:
-
-
 # app.py
 import os
 import re
@@ -26,7 +20,7 @@ from googleapiclient.discovery import build
 try:
     ENV_PATH = Path(__file__).parent / "OpenAIKey.env"
 except NameError:
-    ENV_PATH = Path(os.getcwd()) / "OpenAIKey.env"
+    ENV_PATH = Path.getcwd() / "OpenAIKey.env"
 
 load_dotenv(dotenv_path=ENV_PATH, override=True)
 
@@ -40,11 +34,7 @@ if not OPENAI_API_KEY:
 client = OpenAI(api_key=OPENAI_API_KEY)
 MODEL = "gpt-4.1-mini"
 
-
 # ------------------ GOOGLE SERVICE ACCOUNT JSON ------------------
-# Should be stored either in:
-# - st.secrets["GCP_SERVICE_ACCOUNT_JSON"]
-# - OR .env as GCP_SERVICE_ACCOUNT_JSON='<json string>'
 GCP_JSON_STRING = st.secrets.get(
     "GCP_SERVICE_ACCOUNT_JSON",
     os.getenv("GCP_SERVICE_ACCOUNT_JSON")
@@ -54,9 +44,7 @@ if not GCP_JSON_STRING:
     st.error("❗ Google service account credentials missing.")
     st.stop()
 
-# Convert JSON string → dict for google.oauth2
 GCP_CREDS = json.loads(GCP_JSON_STRING)
-
 
 # ================================================================
 #  GOOGLE SHEETS AUTH
@@ -64,12 +52,11 @@ GCP_CREDS = json.loads(GCP_JSON_STRING)
 def google_auth():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive.readonly"
+        "https://www.googleapis.com/auth/drive.readonly",
     ]
 
     creds = service_account.Credentials.from_service_account_info(
-        GCP_CREDS,
-        scopes=scopes
+        GCP_CREDS, scopes=scopes
     )
 
     gc = gspread.authorize(creds)
@@ -87,7 +74,7 @@ WORKSHEET_NAME2 = "Summary"
 
 @st.cache_data(show_spinner=True)
 def load_sheets():
-    gc, drive = google_auth()
+    gc, _ = google_auth()
 
     # STOCK
     ws_stock = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
@@ -127,7 +114,6 @@ def clean_numeric(df, col):
 def prepare_data():
     stock_df, summary_df = load_sheets()
 
-    # Clean numeric columns
     if "Packs" in stock_df.columns:
         clean_numeric(stock_df, "Packs")
 
@@ -135,29 +121,23 @@ def prepare_data():
         if col in summary_df.columns:
             clean_numeric(summary_df, col)
 
-    # Normalize join keys
-    stock_df["Product Code"] = (
-        stock_df["Product Code"].astype(str).str.strip()
-    )
-    summary_df["ITEM #"] = (
-        summary_df["ITEM #"].astype(str).str.strip()
-    )
+    stock_df["Product Code"] = stock_df["Product Code"].astype(str).strip()
+    summary_df["ITEM #"] = summary_df["ITEM #"].astype(str).strip()
 
-    # Merge
     merged_df = pd.merge(
         stock_df,
         summary_df,
         left_on="Product Code",
         right_on="ITEM #",
         how="left",
-        suffixes=("_stock", "_summary")
+        suffixes=("_stock", "_summary"),
     )
 
     return stock_df, summary_df, merged_df
 
 
 # ================================================================
-#  DIRECT PRODUCT CODE LOOKUP (NO AI — ALWAYS CORRECT)
+#  DIRECT LOOKUP (no AI)
 # ================================================================
 def direct_lookup(merged_df, code):
     code = str(code).strip()
@@ -170,76 +150,68 @@ def direct_lookup(merged_df, code):
         val = row["AVAILABLE_num"].iloc[0]
         if pd.isna(val):
             raw = row["AVAILABLE"].iloc[0]
-            return raw, f"Numeric unavailable; raw AVAILABLE = {raw}"
+            return raw, "Numeric AVAILABLE missing; returning raw value."
         return val, None
 
     return row["AVAILABLE"].iloc[0], None
 
 
 # ================================================================
-#  AI QUERY (if not a product-code question)
+#  AI QUERY
 # ================================================================
 def ai_query(merged_df, question):
     merged_columns = list(merged_df.columns)
 
     prompt = f"""
-You are a senior data analyst. Convert the user's question into valid Python
-code that runs on a pandas DataFrame named merged_df.
+You are a senior data analyst. Convert the user's question into a single Python
+expression operating on the DataFrame 'merged_df'. Use ONLY these columns:
 
-ALLOWED COLUMNS:
 {merged_columns}
 
 RULES:
-- Use ONLY the columns above.
-- Use *_num columns for numeric operations.
-- For product code filters, ALWAYS use merged_df["Product Code"].
-- Output ONLY Python code. No markdown, no comments.
-
-User Question:
-{question}
+- Use *_num for numeric values.
+- For product code lookups, use merged_df["Product Code"].
+- Return ONLY Python code (no markdown, no comments).
+- Expression must return a Series, DataFrame, or scalar.
 """
-
-    # Get the Python expression
     try:
         resp = client.chat.completions.create(
             model=MODEL,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
         ai_code = resp.choices[0].message.content
     except Exception as e:
-        return None, None, f"OpenAI error: {e}"
+        return None, None, f"OpenAI Error: {e}"
 
-    # Execute
     try:
         local_vars = {"merged_df": merged_df, "pd": pd, "np": np}
         result = eval(ai_code, {}, local_vars)
     except Exception as e:
         return ai_code, None, f"Execution error: {e}"
 
-    # Format result
-    result_text = (
-        result.to_string() if isinstance(result, (pd.DataFrame, pd.Series))
-        else str(result)
-    )
+    if isinstance(result, (pd.DataFrame, pd.Series)):
+        result_text = result.to_string()
+    else:
+        result_text = str(result)
 
-    # Explain
-    explanation_prompt = f"""
-Explain this result clearly:
+    # Explanation
+    try:
+        explain_prompt = f"""
+Explain the result in simple terms:
 
 Result:
 {result_text}
 
-User question:
+Question:
 {question}
 """
-    try:
         explain_resp = client.chat.completions.create(
             model=MODEL,
-            messages=[{"role": "user", "content": explanation_prompt}]
+            messages=[{"role": "user", "content": explain_prompt}],
         )
         explanation = explain_resp.choices[0].message.content
     except:
-        explanation = "(Could not generate explanation.)"
+        explanation = "(Explanation unavailable)"
 
     return ai_code, result_text, explanation
 
@@ -248,37 +220,37 @@ User question:
 #  STREAMLIT UI
 # ================================================================
 st.title("📦 Inventory Chatbot (Google Sheets + OpenAI)")
-st.caption("Secure • No keys in code • Uses Streamlit Secrets & .env")
+st.caption("Secure · No API keys in code · Uses Streamlit Secrets + .env")
 
-st.info("Loading Google Sheets…")
+st.info("Loading sheets…")
 stock_df, summary_df, merged_df = prepare_data()
-st.success("Data loaded successfully!")
+st.success("Sheets loaded successfully!")
 
 if st.checkbox("Show merged dataframe preview"):
     st.dataframe(merged_df.head(200))
 
 
-# User input
+# User Input
 question = st.text_input("Ask something about your inventory:")
 
 if st.button("Ask"):
     if not question:
         st.warning("Please enter a question.")
     else:
-        # Detect product code queries
+        # Detect product-code query
         match = re.search(r"product\s*code\s*[:#]?\s*(\d+)", question, re.I)
+
         if match:
             code = match.group(1)
             val, note = direct_lookup(merged_df, code)
 
-            st.subheading(f"Product Code {code}")
+            st.subheader(f"Product Code {code}")   # <-- FIXED LINE
             st.write(f"AVAILABLE: **{val}**")
 
             if note:
                 st.caption(note)
 
         else:
-            # AI fallback
             ai_code, result_text, explanation = ai_query(merged_df, question)
 
             st.subheader("AI-Generated Python Code")
@@ -291,5 +263,4 @@ if st.button("Ask"):
             st.write(explanation)
 
 st.markdown("---")
-st.caption("🔐 Keys loaded securely via st.secrets and .env")
-
+st.caption("🔐 All secrets loaded securely via st.secrets & .env.")
