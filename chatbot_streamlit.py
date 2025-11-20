@@ -111,7 +111,7 @@ def load_sheets():
 
     numeric_cols = [
         "COST","PACK SIZE","ORDERED","LANDED","Shipped","SOH (DC)",
-        "Packs (DC)","Invoiced","AVAILABLE","SOH + SOO","SOO COST","SOH COST"
+        "Packs (DC)","Invoiced","AVAILABLE","SOH + SOO","SOO COST","SOH COST","ITEM #"
     ]
     for col in numeric_cols:
         if col in summary_df:
