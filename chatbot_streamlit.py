@@ -268,6 +268,9 @@ RESULT:
     return explanation
 
 
+st.subheader("🔎 Debug Columns")
+st.write("Summary_df columns:", list(summary_df.columns))
+
 # ======================================================================
 # UI
 # ======================================================================
