@@ -1,6 +1,9 @@
-    # ======================================================================
+# ======================================================================
 # STREAMLIT GOOGLE SHEETS CHATBOT (Stock + Summary)
 # HYBRID JSON PLANNER VERSION (no exec, no eval)
+# With:
+#  - Automatic Status detection (Invoiced / Shipped / Landed / Ordered)
+#  - Ask user to specify Status if missing (Option 3)
 # ======================================================================
 
 import streamlit as st
@@ -174,7 +177,7 @@ stock_df, summary_df = load_sheets()
 # ======================================================================
 def normalize_month(user_text: str):
     """
-    Convert 'nov 2025', '11/2025', 'November 2025' etc into 'November 2025'
+    Convert 'sep 2025', '09/2025', 'September 2025' etc into 'September 2025'
     to match the Month column in stock_df.
     """
     if not isinstance(user_text, str):
@@ -202,13 +205,13 @@ def normalize_month(user_text: str):
     }
 
     parts = text.split()
-    # pattern: "nov 2025"
+    # pattern: "sep 2025"
     if len(parts) == 2:
         m_raw, y_raw = parts
         if m_raw in month_map and re.match(r"^\d{4}$", y_raw):
             return f"{month_map[m_raw]} {y_raw}"
 
-    # pattern: "11 2025"
+    # pattern: "09 2025"
     m = re.match(r"^(\d{1,2})\s+(\d{4})$", text)
     if m:
         mm = int(m.group(1))
@@ -220,7 +223,7 @@ def normalize_month(user_text: str):
             ]
             return f"{month_names[mm-1]} {yyyy}"
 
-    # already canonical (e.g. "november 2025")
+    # already canonical (e.g. "september 2025")
     m2 = re.match(
         r"^(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})$",
         text,
@@ -229,6 +232,44 @@ def normalize_month(user_text: str):
         return f"{m2.group(1).capitalize()} {m2.group(2)}"
 
     return None
+
+
+# ======================================================================
+# STATUS KEYWORD DETECTION (FOR STOCK)
+# ======================================================================
+def detect_status_from_question(question: str) -> str | None:
+    """
+    Detect a single status from the question text.
+    Returns one of: "Invoiced", "Shipped", "Landed", "Ordered", "MULTI", or None.
+    """
+    if not isinstance(question, str):
+        return None
+
+    text = question.lower()
+
+    statuses = set()
+
+    # Invoiced / invoice / inv
+    if re.search(r"\b(inv|invoice|invoiced)\b", text):
+        statuses.add("Invoiced")
+
+    # Shipped / ship
+    if re.search(r"\b(ship|shipped)\b", text):
+        statuses.add("Shipped")
+
+    # Landed / land
+    if re.search(r"\b(land|landed)\b", text):
+        statuses.add("Landed")
+
+    # Ordered / order / ord
+    if re.search(r"\b(order|ordered|ord)\b", text):
+        statuses.add("Ordered")
+
+    if len(statuses) == 0:
+        return None
+    if len(statuses) > 1:
+        return "MULTI"
+    return list(statuses)[0]
 
 
 # ======================================================================
@@ -242,8 +283,8 @@ def apply_plan(plan: dict, df: pd.DataFrame, df_name: str):
     {
       "filters": [
         {"column": "ITEM #", "op": "==", "value": 20373},
-        {"column": "Month", "op": "==", "value": "November 2025"},
-        {"column": "Status", "op": "==", "value": "Invoiced"}
+        {"column": "Month", "op": "==", "value": "September 2025"},
+        {"column": "Status", "op": "==", "value": "Landed"}
       ],
       "metric": "AVAILABLE_num",
       "aggregation": "sum" | "max" | "min" | "rows" | "list",
@@ -276,13 +317,13 @@ def apply_plan(plan: dict, df: pd.DataFrame, df_name: str):
         op = f.get("op", "==")
         val = f.get("value")
 
-        # Month normalization
+        # Month normalization (stock only)
         if col == "Month" and isinstance(val, str):
             norm = normalize_month(val)
             if norm:
                 val = norm
 
-        # ⭐ Status normalization at query-time
+        # Status normalization at query-time (stock only)
         if df_name == "stock" and col == "Status" and isinstance(val, str):
             val_norm = val.strip().lower()
             if val_norm.startswith("inv"):        # "invoiced", "invoice", "inv"
@@ -339,7 +380,7 @@ def apply_plan(plan: dict, df: pd.DataFrame, df_name: str):
 # ======================================================================
 # AI PLANNER
 # ======================================================================
-def build_planner_prompt(question: str, df_name: str, df: pd.DataFrame) -> str:
+def build_planner_prompt(question: str, df_name: str, df: pd.DataFrame, detected_status: str | None) -> str:
     cols = list(df.columns)
 
     if df_name == "stock":
@@ -419,6 +460,17 @@ STRICT RULES:
     if status_col:
         prompt += f"\nKnown example statuses (canonical): {status_examples}\n"
 
+    # Inject detected status (from Python side) to enforce it
+    if df_name == "stock" and status_col and detected_status in ["Invoiced", "Shipped", "Landed", "Ordered"]:
+        prompt += f"""
+The user's question contains the status keyword, interpreted as:
+DETECTED_STATUS = "{detected_status}"
+
+You MUST include a filter:
+  {{"column": "Status", "op": "==", "value": "{detected_status}"}}
+in the filters list of the JSON plan.
+"""
+
     prompt += "\nEXAMPLES:\n"
 
     for ex in examples:
@@ -437,12 +489,12 @@ Return ONLY valid JSON. No explanation, no markdown.
 
 
 @st.cache_data(show_spinner=False)
-def get_plan(question: str, df_name: str) -> dict | None:
+def get_plan(question: str, df_name: str, detected_status: str | None) -> dict | None:
     """
-    Generate a JSON plan using GPT, cached by question + df_name.
+    Generate a JSON plan using GPT, cached by (question, df_name, detected_status).
     """
     df = stock_df if df_name == "stock" else summary_df
-    prompt = build_planner_prompt(question, df_name, df)
+    prompt = build_planner_prompt(question, df_name, df, detected_status)
 
     resp = client.chat.completions.create(
         model=MODEL,
@@ -471,7 +523,32 @@ def get_plan(question: str, df_name: str) -> dict | None:
 def answer_question(question: str, df_name: str):
     df = stock_df if df_name == "stock" else summary_df
 
-    plan = get_plan(question, df_name)
+    detected_status = None
+
+    # For stock, enforce that status is explicitly present (Option 3)
+    if df_name == "stock":
+        detected_status = detect_status_from_question(question)
+
+        if detected_status is None:
+            # No status word found → ask user to clarify
+            msg = (
+                "⚠ I couldn't detect a status in your question.\n\n"
+                "Please rephrase your question including exactly ONE of these statuses:\n"
+                "- Invoiced\n- Shipped\n- Landed\n- Ordered\n\n"
+                "Example: `How many Landed packs for 20588 for September 2025?`"
+            )
+            return msg, None, None
+
+        if detected_status == "MULTI":
+            msg = (
+                "⚠ Your question seems to mention more than one status.\n\n"
+                "Please clarify using only ONE of:\n"
+                "- Invoiced\n- Shipped\n- Landed\n- Ordered"
+            )
+            return msg, None, None
+
+    # Build plan with detected_status (or None for summary_df)
+    plan = get_plan(question, df_name, detected_status)
     if plan is None:
         return "❌ I couldn't create a valid plan for that question.", None, None
 
@@ -529,13 +606,13 @@ st.markdown("### Quick questions")
 c1, c2, c3 = st.columns(3)
 with c1:
     if st.button("how many Ordered packs for 20373 for November 2025?"):
-        st.session_state["preset_question"] = "how many Ordered packs for 20373 for November 2025??"
+        st.session_state["preset_question"] = "how many Ordered packs for 20373 for November 2025?"
 with c2:
     if st.button("how many Invoiced packs for 20373 for November 2025?"):
         st.session_state["preset_question"] = "how many Invoiced packs for 20373 for November 2025?"
 with c3:
-    if st.button("how many status Landed packs for 20588 for September 2025??"):
-        st.session_state["preset_question"] = "how many status Landed packs for 20588 for September 2025??"
+    if st.button("how many Landed packs for 20373 for November 2025?"):
+        st.session_state["preset_question"] = "how many Landed packs for 20373 for November 2025?"
 
 default_q = st.session_state.get("preset_question", "")
 question = st.text_input("Ask your question (case-insensitive):", value=default_q)
