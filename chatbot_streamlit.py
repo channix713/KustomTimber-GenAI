@@ -328,7 +328,7 @@ def build_planner_prompt(question: str, df_name: str, df: pd.DataFrame) -> str:
         numeric_col = "PACKS"
         month_col = "Month" if "Month" in df.columns else None
         status_col = "Status" if "Status" in df.columns else None
-        status_examples = ["Invoiced", "Pending", "Shipped", "Backorder", "Ordered"]
+        status_examples = ["Invoiced", "Pending", "Shipped", "Backorder", "Ordered","invoiced","shipped","pending","backorder","ordered","landed","Landed"]
     else:
         id_col = "ITEM #"
         numeric_col = "AVAILABLE_num"
