@@ -534,8 +534,8 @@ with c2:
     if st.button("how many Invoiced packs for 20373 for November 2025?"):
         st.session_state["preset_question"] = "how many Invoiced packs for 20373 for November 2025?"
 with c3:
-    if st.button("how many Landed packs for 20373 for November 2025?"):
-        st.session_state["preset_question"] = "how many Landed packs for 20373 for November 2025?"
+    if st.button("how many status Landed packs for 20588 for September 2025??"):
+        st.session_state["preset_question"] = "how many status Landed packs for 20588 for September 2025??"
 
 default_q = st.session_state.get("preset_question", "")
 question = st.text_input("Ask your question (case-insensitive):", value=default_q)
