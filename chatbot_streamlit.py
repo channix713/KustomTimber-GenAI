@@ -113,7 +113,7 @@ def load_sheets():
 
     if "PACKS" in stock_df:
         stock_df["PACKS"] = pd.to_numeric(stock_df["PACKS"], errors="coerce")
-        # Empty numeric cells → 0 (per your choice)
+        # Empty numeric cells → 0
         stock_df["PACKS"] = stock_df["PACKS"].fillna(0)
 
     # Normalize Month column if present
@@ -126,17 +126,16 @@ def load_sheets():
             if not isinstance(s, str):
                 return ""
             t = s.strip().lower()
-            # Some likely statuses
+            # Only allowed: Invoiced, Shipped, Landed, Ordered
             if t.startswith("inv"):
                 return "Invoiced"
-            if "pend" in t:
-                return "Pending"
             if "ship" in t:
                 return "Shipped"
-            if "back" in t:
-                return "Backorder"
+            if "land" in t:
+                return "Landed"
             if "order" in t or "ord" in t:
                 return "Ordered"
+            # fallback: title-case
             return s.strip().title()
         stock_df["Status"] = stock_df["Status"].apply(norm_status)
 
@@ -158,10 +157,12 @@ def load_sheets():
 
     if "ITEM #" in summary_df:
         summary_df["ITEM #"] = pd.to_numeric(summary_df["ITEM #"], errors="coerce")
-        # For ID, we typically do NOT force 0, leave NaN okay
 
     # ALWAYS create AVAILABLE_num as measure
-    summary_df["AVAILABLE_num"] = pd.to_numeric(summary_df.get("AVAILABLE", np.nan), errors="coerce").fillna(0)
+    summary_df["AVAILABLE_num"] = pd.to_numeric(
+        summary_df.get("AVAILABLE", np.nan),
+        errors="coerce"
+    ).fillna(0)
 
     return stock_df, summary_df
 
@@ -220,7 +221,10 @@ def normalize_month(user_text: str):
             return f"{month_names[mm-1]} {yyyy}"
 
     # already canonical (e.g. "november 2025")
-    m2 = re.match(r"^(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})$", text)
+    m2 = re.match(
+        r"^(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})$",
+        text,
+    )
     if m2:
         return f"{m2.group(1).capitalize()} {m2.group(2)}"
 
@@ -239,8 +243,7 @@ def apply_plan(plan: dict, df: pd.DataFrame, df_name: str):
       "filters": [
         {"column": "ITEM #", "op": "==", "value": 20373},
         {"column": "Month", "op": "==", "value": "November 2025"},
-        {"column": "Status", "op": "==", "value": "Invoiced"},
-        {"column": "Status", "op": "==", "value": "invoiced"}
+        {"column": "Status", "op": "==", "value": "Invoiced"}
       ],
       "metric": "AVAILABLE_num",
       "aggregation": "sum" | "max" | "min" | "rows" | "list",
@@ -273,10 +276,25 @@ def apply_plan(plan: dict, df: pd.DataFrame, df_name: str):
         op = f.get("op", "==")
         val = f.get("value")
 
+        # Month normalization
         if col == "Month" and isinstance(val, str):
             norm = normalize_month(val)
             if norm:
                 val = norm
+
+        # ⭐ Status normalization at query-time
+        if df_name == "stock" and col == "Status" and isinstance(val, str):
+            val_norm = val.strip().lower()
+            if val_norm.startswith("inv"):        # "invoiced", "invoice", "inv"
+                val = "Invoiced"
+            elif "ship" in val_norm:              # "shipped", "ship"
+                val = "Shipped"
+            elif "land" in val_norm:              # "landed"
+                val = "Landed"
+            elif "order" in val_norm or "ord" in val_norm:  # "ordered", "order"
+                val = "Ordered"
+            else:
+                val = val.strip().title()
 
         series = df[col]
 
@@ -329,7 +347,7 @@ def build_planner_prompt(question: str, df_name: str, df: pd.DataFrame) -> str:
         numeric_col = "PACKS"
         month_col = "Month" if "Month" in df.columns else None
         status_col = "Status" if "Status" in df.columns else None
-        status_examples = ["Invoiced", "Pending", "Shipped", "Backorder", "Ordered","invoiced","shipped","pending","backorder","ordered","landed","Landed"]
+        status_examples = ["Invoiced", "Shipped", "Landed", "Ordered"]
     else:
         id_col = "ITEM #"
         numeric_col = "AVAILABLE_num"
@@ -389,17 +407,17 @@ JSON SCHEMA:
 STRICT RULES:
 - Use ONLY columns from this dataframe.
 - Product / item code MUST filter on "{id_col}".
-- For "how many", "total", "how much", MUST use "{numeric_col}" as the metric.
-- On the STOCK sheet, do NOT use any other numeric column by default except "PACKS"
-  unless the user explicitly mentions another column.
-- On the SUMMARY sheet, do NOT use any other numeric column by default except "AVAILABLE_num"
-  unless the user explicitly mentions another column (like ORDERED, LANDED, etc.).
-- If a month is mentioned and "Month" exists, add a filter on "Month" with op "==".
-- If status is mentioned and "{status_col}" exists, add a filter on "{status_col}".
+- For 'how many', 'total', 'how much', you MUST use '{numeric_col}' as the metric.
+- On the STOCK sheet, do NOT use any other numeric column by default except 'PACKS'
+  unless the user explicitly mentions another numeric column.
+- On the SUMMARY sheet, do NOT use any other numeric column by default except 'AVAILABLE_num'
+  unless the user explicitly mentions another numeric column (like ORDERED, LANDED, etc.).
+- If a month is mentioned and 'Month' exists, add a filter on 'Month' with op '=='.
+- If status is mentioned and '{status_col}' exists, add a filter on '{status_col}'.
 """
 
     if status_col:
-        prompt += f"\nKnown example statuses: {status_examples}\n"
+        prompt += f"\nKnown example statuses (canonical): {status_examples}\n"
 
     prompt += "\nEXAMPLES:\n"
 
