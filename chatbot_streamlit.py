@@ -20,7 +20,7 @@ from googleapiclient.discovery import build
 try:
     ENV_PATH = Path(__file__).parent / "OpenAIKey.env"
 except NameError:
-    ENV_PATH = Path.getcwd() / "OpenAIKey.env"
+    ENV_PATH = Path(os.getcwd()) / "OpenAIKey.env"
 
 load_dotenv(dotenv_path=ENV_PATH, override=True)
 
@@ -76,7 +76,7 @@ WORKSHEET_NAME2 = "Summary"
 def load_sheets():
     gc, _ = google_auth()
 
-    # STOCK
+    # STOCK SHEET
     ws_stock = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
     stock_rows = ws_stock.get_all_values()
     stock_df = pd.DataFrame(stock_rows)
@@ -84,7 +84,7 @@ def load_sheets():
     stock_df = stock_df[1:].reset_index(drop=True)
     stock_df = stock_df.replace(r"^\s*$", np.nan, regex=True).dropna(how="all")
 
-    # SUMMARY
+    # SUMMARY SHEET
     ws_summary = gc.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME2)
     summary_rows = ws_summary.get_all_values()
     summary_df = pd.DataFrame(summary_rows)
@@ -96,7 +96,7 @@ def load_sheets():
 
 
 # ================================================================
-#  CLEAN NUMERIC COLUMNS
+#  CLEAN NUMERIC FIELDS
 # ================================================================
 def clean_numeric(df, col):
     df[col + "_num"] = (
@@ -108,12 +108,13 @@ def clean_numeric(df, col):
 
 
 # ================================================================
-#  MERGE DATAFRAMES
+#  PREPARE MERGED DATA
 # ================================================================
 @st.cache_data(show_spinner=True)
 def prepare_data():
     stock_df, summary_df = load_sheets()
 
+    # Clean numeric columns
     if "Packs" in stock_df.columns:
         clean_numeric(stock_df, "Packs")
 
@@ -121,9 +122,11 @@ def prepare_data():
         if col in summary_df.columns:
             clean_numeric(summary_df, col)
 
-    stock_df["Product Code"] = stock_df["Product Code"].astype(str).strip()
-    summary_df["ITEM #"] = summary_df["ITEM #"].astype(str).strip()
+    # FIXED — .str.strip() instead of .strip()
+    stock_df["Product Code"] = stock_df["Product Code"].astype(str).str.strip()
+    summary_df["ITEM #"] = summary_df["ITEM #"].astype(str).str.strip()
 
+    # Merge sheets
     merged_df = pd.merge(
         stock_df,
         summary_df,
@@ -137,7 +140,7 @@ def prepare_data():
 
 
 # ================================================================
-#  DIRECT LOOKUP (no AI)
+#  DIRECT PRODUCT CODE LOOKUP (NO AI — ALWAYS CORRECT)
 # ================================================================
 def direct_lookup(merged_df, code):
     code = str(code).strip()
@@ -150,30 +153,31 @@ def direct_lookup(merged_df, code):
         val = row["AVAILABLE_num"].iloc[0]
         if pd.isna(val):
             raw = row["AVAILABLE"].iloc[0]
-            return raw, "Numeric AVAILABLE missing; returning raw value."
+            return raw, "Converted numeric unavailable; using raw AVAILABLE value."
         return val, None
 
     return row["AVAILABLE"].iloc[0], None
 
 
 # ================================================================
-#  AI QUERY
+#  AI QUERY (fallback)
 # ================================================================
 def ai_query(merged_df, question):
     merged_columns = list(merged_df.columns)
 
     prompt = f"""
 You are a senior data analyst. Convert the user's question into a single Python
-expression operating on the DataFrame 'merged_df'. Use ONLY these columns:
+expression operating on the DataFrame 'merged_df'.
 
+Allowed Columns:
 {merged_columns}
 
 RULES:
-- Use *_num for numeric values.
-- For product code lookups, use merged_df["Product Code"].
-- Return ONLY Python code (no markdown, no comments).
-- Expression must return a Series, DataFrame, or scalar.
+- Use *_num columns for numeric operations.
+- For product code lookups, ALWAYS use merged_df["Product Code"].
+- Return ONLY Python code (no commentary, no markdown).
 """
+
     try:
         resp = client.chat.completions.create(
             model=MODEL,
@@ -181,23 +185,24 @@ RULES:
         )
         ai_code = resp.choices[0].message.content
     except Exception as e:
-        return None, None, f"OpenAI Error: {e}"
+        return None, None, f"OpenAI error: {e}"
 
+    # Execute the AI-generated code
     try:
         local_vars = {"merged_df": merged_df, "pd": pd, "np": np}
         result = eval(ai_code, {}, local_vars)
     except Exception as e:
         return ai_code, None, f"Execution error: {e}"
 
-    if isinstance(result, (pd.DataFrame, pd.Series)):
+    if isinstance(result, (pd.Series, pd.DataFrame)):
         result_text = result.to_string()
     else:
         result_text = str(result)
 
-    # Explanation
+    # Generate explanation
     try:
         explain_prompt = f"""
-Explain the result in simple terms:
+Explain this result clearly:
 
 Result:
 {result_text}
@@ -211,7 +216,7 @@ Question:
         )
         explanation = explain_resp.choices[0].message.content
     except:
-        explanation = "(Explanation unavailable)"
+        explanation = "(No explanation available.)"
 
     return ai_code, result_text, explanation
 
@@ -220,9 +225,9 @@ Question:
 #  STREAMLIT UI
 # ================================================================
 st.title("📦 Inventory Chatbot (Google Sheets + OpenAI)")
-st.caption("Secure · No API keys in code · Uses Streamlit Secrets + .env")
+st.caption("Secure • No API keys stored in code • Uses Streamlit Secrets + .env")
 
-st.info("Loading sheets…")
+st.info("Loading data from Google Sheets…")
 stock_df, summary_df, merged_df = prepare_data()
 st.success("Sheets loaded successfully!")
 
@@ -230,27 +235,28 @@ if st.checkbox("Show merged dataframe preview"):
     st.dataframe(merged_df.head(200))
 
 
-# User Input
+# User Question
 question = st.text_input("Ask something about your inventory:")
 
 if st.button("Ask"):
     if not question:
         st.warning("Please enter a question.")
     else:
-        # Detect product-code query
+        # Detect "Product Code 12345"
         match = re.search(r"product\s*code\s*[:#]?\s*(\d+)", question, re.I)
 
         if match:
             code = match.group(1)
             val, note = direct_lookup(merged_df, code)
 
-            st.subheader(f"Product Code {code}")   # <-- FIXED LINE
+            st.subheader(f"Product Code {code}")
             st.write(f"AVAILABLE: **{val}**")
 
             if note:
                 st.caption(note)
 
         else:
+            # AI fallback
             ai_code, result_text, explanation = ai_query(merged_df, question)
 
             st.subheader("AI-Generated Python Code")
@@ -262,5 +268,6 @@ if st.button("Ask"):
             st.subheader("Explanation")
             st.write(explanation)
 
+
 st.markdown("---")
-st.caption("🔐 All secrets loaded securely via st.secrets & .env.")
+st.caption("🔐 Secrets loaded securely via st.secrets & .env.")
