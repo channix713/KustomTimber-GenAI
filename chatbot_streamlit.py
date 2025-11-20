@@ -81,7 +81,7 @@ WS_SUMMARY = "Summary"
 def refresh_sheets():
     st.cache_data.clear()
     st.success("🔄 Sheets refreshed!")
-    st.stop()
+    st.experimental_rerun()
 
 if st.button("🔄 Refresh Sheets Now"):
     refresh_sheets()
