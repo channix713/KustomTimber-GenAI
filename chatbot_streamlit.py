@@ -1,23 +1,21 @@
 # ======================================================================
 # STREAMLIT GOOGLE SHEETS CHATBOT (Stock + Summary)
-# With isolated dataframes, strict validator, SAFE .iloc[0] handling,
-# auto-refresh, case-insensitive questions.
+# Final Clean Version — With strict validator, isolation, refresh, safe execution
 # ======================================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import gspread
-import os
 import json
 import re
 import ast
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
 from openai import OpenAI
-
 
 # ======================================================================
 # STREAMLIT SETUP
@@ -27,7 +25,7 @@ st.title("📦 Inventory Chatbot — Stock & Summary Sheets")
 
 
 # ======================================================================
-# LOAD OPENAI KEY (your required method)
+# OPENAI API KEY LOADING (your required method)
 # ======================================================================
 try:
     ENV_PATH = Path(__file__).parent / "OpenAIKey.env"
@@ -46,7 +44,7 @@ MODEL = "gpt-4.1-mini"
 
 
 # ======================================================================
-# GOOGLE CREDS
+# GOOGLE CREDS (your required format)
 # ======================================================================
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -56,7 +54,7 @@ SCOPES = [
 def get_google_creds():
     """Load credentials from Streamlit Secrets."""
     if "GOOGLE_SERVICE_ACCOUNT_JSON" not in st.secrets:
-        st.error("❌ GOOGLE_SERVICE_ACCOUNT_JSON missing in secrets.")
+        st.error("❌ Missing GOOGLE_SERVICE_ACCOUNT_JSON in secrets.")
         st.stop()
     try:
         info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
@@ -83,7 +81,7 @@ WS_SUMMARY = "Summary"
 # ======================================================================
 def refresh_sheets():
     st.cache_data.clear()
-    st.success("🔄 Google Sheets refreshed successfully!")
+    st.success("🔄 Google Sheets refreshed!")
     st.stop()
 
 if st.button("🔄 Refresh Sheets Now"):
@@ -91,12 +89,12 @@ if st.button("🔄 Refresh Sheets Now"):
 
 
 # ======================================================================
-# LOAD SHEETS (cached)
+# LOAD SHEETS
 # ======================================================================
 @st.cache_data(show_spinner=True)
 def load_sheets():
 
-    # STOCK
+    # -------------------- STOCK --------------------
     ws = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_STOCK)
     stock_df = pd.DataFrame(ws.get_all_values())
     stock_df.columns = stock_df.iloc[0].str.strip()
@@ -107,7 +105,7 @@ def load_sheets():
         if col in stock_df:
             stock_df[col] = pd.to_numeric(stock_df[col], errors="coerce")
 
-    # SUMMARY
+    # -------------------- SUMMARY --------------------
     ws2 = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_SUMMARY)
     summary_df = pd.DataFrame(ws2.get_all_values())
     summary_df.columns = summary_df.iloc[0].str.strip()
@@ -118,12 +116,11 @@ def load_sheets():
         "COST","PACK SIZE","ORDERED","LANDED","Shipped","SOH (DC)",
         "Packs (DC)","Invoiced","AVAILABLE","SOH + SOO","SOO COST","SOH COST"
     ]
-
     for col in numeric_cols:
         if col in summary_df:
             summary_df[col] = pd.to_numeric(summary_df[col], errors="coerce")
 
-    # ALWAYS create AVAILABLE_num safely
+    # Always create AVAILABLE_num
     summary_df["AVAILABLE_num"] = pd.to_numeric(summary_df.get("AVAILABLE", np.nan), errors="coerce")
 
     return stock_df, summary_df
@@ -135,44 +132,45 @@ stock_df, summary_df = load_sheets()
 # ======================================================================
 # STRICT VALIDATOR
 # ======================================================================
-FORBIDDEN = ["import", "open(", "os.", "sys.", "subprocess", "__", "eval", "exec"]
+FORBIDDEN = [
+    "import", "open(", "os.", "sys.", "subprocess", "__",
+    "eval", "exec", "globals", "locals"
+]
 
 def extract_columns(code_text):
     pattern = r'\[\s*[\'"]([^\'"]+)[\'"]\s*\]'
     return re.findall(pattern, code_text)
 
-def validate_ai_code(ai_code, df_columns):
-    # Block dangerous commands
+def validate_ai_code(ai_code: str, df_columns):
+
     for bad in FORBIDDEN:
         if bad in ai_code:
-            return False, f"Forbidden keyword detected: {bad}"
+            return False, f"Forbidden keyword: {bad}"
 
-    # Must contain result =
     if "result =" not in ai_code:
         return False, "Missing: result ="
 
-    # Check syntax
     try:
         ast.parse(ai_code)
     except Exception as e:
         return False, f"Syntax error: {e}"
 
-    # Check column usage
     lower_cols = [c.lower() for c in df_columns]
     for col in extract_columns(ai_code):
         if col.lower() not in lower_cols:
-            return False, f"Invalid column (not in dataframe): {col}"
+            return False, f"Invalid column used: {col}"
 
     return True, "OK"
 
 
 # ======================================================================
-# AI ENGINE WITH SAFE ILOC HANDLING
+# AI ENGINE (works per individual dataframe)
 # ======================================================================
 def ask_sheet(question, df_name):
 
     q = question.lower().strip()
 
+    # Select dataframe + rules
     if df_name == "stock":
         df = stock_df
         df_label = "stock_df"
@@ -188,36 +186,34 @@ def ask_sheet(question, df_name):
 
     cols = list(df.columns)
 
+    # --------------------- AI PROMPT ---------------------
     prompt = f"""
 You are an expert pandas code generator.
 
-You work ONLY with:
-
-DATAFRAME: {df_label}
-COLUMNS: {cols}
+You work ONLY with dataframe: {df_label}
+COLUMNS = {cols}
 
 RULES:
-- Use ONLY dataframe {df_label}
+- Only use {df_label}
 - Product ID column = "{id_col}"
-- Main numeric column = "{value_col}"
+- Numeric column = "{value_col}"
 - Forbidden columns: {forbidden}
-- Use EXACT column names shown
-- NEVER use .iloc[0] — ALWAYS use .head(1)
+- NEVER use .iloc[0] → ALWAYS use .head(1)
 - Final line MUST be: result = <value>
-- Output only Python code
+- Output ONLY python code.
 
 QUESTION:
 {q}
 """
 
-    resp = client.chat.completions.create(
+    response = client.chat.completions.create(
         model=MODEL,
         messages=[{"role":"user","content":prompt}]
     )
 
-    ai_code = resp.choices[0].message.content.strip()
+    ai_code = response.choices[0].message.content.strip()
 
-    # CLEAN & SANITIZE
+    # Clean code
     ai_code = (
         ai_code.replace("```python","")
                .replace("```","")
@@ -227,24 +223,77 @@ QUESTION:
                .strip()
     )
 
-    # AUTO-FIX .iloc[0]
-    if ".iloc[0]" in ai_code:
-        ai_code = ai_code.replace(".iloc[0]", ".head(1)")
+    # Fix .iloc[0]
+    ai_code = ai_code.replace(".iloc[0]", ".head(1)")
 
-    # VALIDATE CODE
+    # VALIDATE
     ok, msg = validate_ai_code(ai_code, df.columns)
     if not ok:
         return f"❌ AI Code Validation Failed:\n{msg}\n\nCODE:\n{ai_code}"
 
-    # SAFE EXECUTION
+    # EXECUTE
     try:
-        exec_locals = {df_label: df}
-        exec(ai_code, {}, exec_locals)
-        result = exec_locals["result"]
+        local_vars = {df_label: df}
+        exec(ai_code, {}, local_vars)
+        result = local_vars["result"]
 
-        # EMPTY RESULT HANDLER
         if isinstance(result, (pd.DataFrame, pd.Series)) and result.empty:
-            return f"""
-⚠️ No matching rows found.
+            return (
+                "⚠️ No matching rows found.\n\n"
+                "Tried running:\n"
+                f"`{ai_code}`\n\n"
+                "📌 First 5 rows:\n"
+                f"{df.head().to_string()}"
+            )
 
-Tried running:
+    except Exception as e:
+        return (
+            f"❌ Error executing AI code: {e}\n\n"
+            f"CODE:\n{ai_code}"
+        )
+
+    # FORMAT RESULT
+    result_text = (
+        result.to_string() if isinstance(result,(pd.DataFrame,pd.Series))
+        else str(result)
+    )
+
+    # EXPLAIN RESULT
+    explain_prompt = f"""
+Explain clearly:
+
+QUESTION:
+{question}
+
+RESULT:
+{result_text}
+"""
+
+    explanation = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role":"user","content":explain_prompt}]
+    ).choices[0].message.content
+
+    return explanation
+
+
+# ======================================================================
+# UI
+# ======================================================================
+st.subheader("Choose Sheet to Query")
+sheet_choice = st.selectbox("Sheet:", ["Stock Sheet", "Summary Sheet"])
+
+df_name = "stock" if sheet_choice == "Stock Sheet" else "summary"
+df_selected = stock_df if df_name == "stock" else summary_df
+
+if st.checkbox("Show DataFrame Preview"):
+    st.dataframe(df_selected, use_container_width=True)
+
+question = st.text_input("Ask anything (case-insensitive):")
+
+if st.button("Ask"):
+    if not question.strip():
+        st.warning("Enter a question.")
+    else:
+        st.markdown("### Chatbot Answer:")
+        st.write(ask_sheet(question, df_name))
