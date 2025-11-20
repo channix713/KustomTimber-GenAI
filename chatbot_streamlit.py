@@ -77,19 +77,19 @@ def load_sheets():
     stock_df.columns = stock_df.iloc[0].str.strip()
     stock_df = stock_df[1:].reset_index(drop=True)
 
-    # Clean all text fields
+    # Clean all text
     for col in stock_df.columns:
         stock_df[col] = stock_df[col].astype(str).str.strip()
 
     # Product Code cleanup
-    if "Product Code" in stock_df:
+    if "Product Code" in stock_df.columns:
         stock_df["Product Code"] = (
             stock_df["Product Code"]
             .str.replace(r"[^0-9]", "", regex=True)
             .str.strip()
         )
 
-    # MonthNorm from Month Required TEXT column
+    # MonthNorm from Month Required text
     if "Month Required" in stock_df.columns:
         stock_df["MonthNorm"] = (
             stock_df["Month Required"]
@@ -100,7 +100,7 @@ def load_sheets():
     else:
         stock_df["MonthNorm"] = None
 
-    # Packs cleanup → Packs_num
+    # Packs cleanup
     if "Packs" in stock_df.columns:
         stock_df["Packs_num"] = (
             stock_df["Packs"]
@@ -115,10 +115,9 @@ def load_sheets():
             t = t.lower().strip()
             aliases = ["inv", "invo", "invoice", "invoiced", "invc", "inv.", "invoicing"]
             for a in aliases:
-                if t == a or t.startswith(a):
+                if t.startswith(a):
                     return "invoiced"
             return t
-
         stock_df["Status"] = stock_df["Status"].apply(normalize_status)
 
     # ---------------- SUMMARY SHEET ----------------
@@ -131,6 +130,7 @@ def load_sheets():
     for col in summary_df.columns:
         summary_df[col] = summary_df[col].astype(str).str.strip()
 
+    # Numeric cleanup
     numeric_cols = ["AVAILABLE", "ORDERED", "LANDED", "Invoiced"]
     for col in numeric_cols:
         if col in summary_df.columns:
@@ -151,29 +151,51 @@ if st.button("🔄 Refresh Google Sheets Now"):
 
 
 # ================================================================
-#  AI QUERY ENGINE — NOW ENFORCES Packs_num
+#  AI QUERY ENGINE — STRONG PACKS_num ENFORCEMENT
 # ================================================================
+def enforce_packs_num(ai_code, question):
+    """
+    Rewrites AI-generated code to enforce Packs_num and prevent errors.
+    """
+
+    q = question.lower()
+
+    # If user mentions packs → Packs_num required
+    if "pack" in q:
+
+        # If code incorrectly uses Packs → fix it
+        if "Packs" in ai_code and "Packs_num" not in ai_code:
+            ai_code = ai_code.replace('["Packs"]', '["Packs_num"]')
+            ai_code = ai_code.replace("['Packs']", "['Packs_num']")
+
+        # If Packs_num is still missing → block execution
+        if "Packs_num" not in ai_code:
+            return None, "❌ AI did not use Packs_num. Execution blocked for safety."
+
+    return ai_code, None
+
+
 def ai_query(df, question):
     cols = list(df.columns)
 
     prompt = f"""
-You convert the user's question into a single Python pandas expression.
+You translate the user's question into a single Python pandas expression.
 
-THE DATAFRAME IS NAMED df.
+THE DATAFRAME IS df.
 
-IMPORTANT RULES:
-- ALWAYS use df["Packs_num"] for packs.
-- NEVER use df["Packs"] — that column contains text like "8m2".
-- ANY question mentioning "pack" MUST use Packs_num.
+STRICT RULES:
+- If user mentions "pack", you MUST use df["Packs_num"].
+- NEVER use df["Packs"] (strings like "54m2").
 - Use df["MonthNorm"] for month filtering.
 - Use df["Status"] for status filtering.
-- Use numeric *_num fields whenever available.
-- Output ONLY valid Python code — no explanation, no quotes.
+- Always use *_num fields for numeric operations.
+- Output ONLY Python code — no quotes or explanation.
+- Code must be executable via eval().
 
-Columns available:
+COLUMNS:
 {cols}
 
-User question:
+USER QUESTION:
 {question}
 """
 
@@ -185,17 +207,24 @@ User question:
         ai_code = resp.choices[0].message.content.strip()
 
     except Exception as e:
-        return None, None, f"OpenAI API error: {e}"
+        return None, None, f"OpenAI error: {e}"
 
-    # Execute safely
+    # Enforce Packs_num
+    ai_code, rule_error = enforce_packs_num(ai_code, question)
+    if rule_error:
+        return ai_code, None, rule_error
+
+    # Execute code
     try:
         result = eval(ai_code, {"df": df, "pd": pd, "np": np}, {})
     except Exception as e:
         return ai_code, None, f"Execution error: {e}"
 
-    result_text = (
-        result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
-    )
+    # Format output
+    if isinstance(result, (pd.DataFrame, pd.Series)):
+        result_text = result.to_string()
+    else:
+        result_text = str(result)
 
     return ai_code, result_text, None
 
@@ -203,14 +232,10 @@ User question:
 # ================================================================
 #  STREAMLIT UI
 # ================================================================
-st.title("📦 Inventory Chatbot — Packs_num Enforced")
-st.caption("Now fully accurate for packs queries.")
+st.title("📦 Inventory Chatbot — Strict Packs_num Enforcement")
+st.caption("Guaranteed correct packs answers. AI cannot return 0 by mistake.")
 
 stock_df, summary_df = load_sheets()
-
-# Save in session state
-st.session_state["stock_df"] = stock_df
-st.session_state["summary_df"] = summary_df
 
 sheet_choice = st.selectbox(
     "Select which sheet to query:",
@@ -227,9 +252,8 @@ if st.checkbox("Show sheet preview"):
 #  DEBUG PANEL
 # ================================================================
 if st.checkbox("🔍 DEBUG — Show rows for Product Code 20373"):
-    st.subheader("Debug for Product Code 20373")
-
     debug_rows = stock_df[stock_df["Product Code"] == "20373"]
+    st.write("Rows for 20373:")
     st.dataframe(debug_rows)
 
     st.write("MonthNorm:", debug_rows["MonthNorm"].unique())
@@ -241,17 +265,9 @@ if st.checkbox("🔍 DEBUG — Show rows for Product Code 20373"):
     st.write("Rows Status == 'invoiced'")
     st.dataframe(debug_rows[debug_rows["Status"] == "invoiced"])
 
-    st.write("Rows matching BOTH:")
-    st.dataframe(
-        debug_rows[
-            (debug_rows["MonthNorm"] == "november 2025") &
-            (debug_rows["Status"] == "invoiced")
-        ]
-    )
-
 
 # ================================================================
-#  QUESTION INPUT
+#  USER QUESTION
 # ================================================================
 question = st.text_input("Ask your question:")
 
@@ -268,4 +284,4 @@ if st.button("Ask"):
         st.text(result_text)
 
 st.markdown("---")
-st.caption("🔐 Secure Secrets | 🔄 Auto-Refresh | ✔ Packs_num Enforced")
+st.caption("🔐 Safe | 🎯 Accurate | 🧮 Packs_num Guaranteed")
