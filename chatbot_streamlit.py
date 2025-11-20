@@ -60,7 +60,7 @@ def google_auth():
 
 
 # ================================================================
-#  LOAD AND CLEAN SHEETS — AUTO REFRESH EVERY 60s
+#  LOAD & CLEAN SHEETS (AUTO REFRESH EVERY 60s)
 # ================================================================
 SPREADSHEET_ID = "1UG_N-zkgwCpObWTgmg8EPS7-N08aqintu8h3kN8yRmM"
 WORKSHEET_NAME = "Stock"
@@ -77,7 +77,7 @@ def load_sheets():
     stock_df.columns = stock_df.iloc[0].str.strip()
     stock_df = stock_df[1:].reset_index(drop=True)
 
-    # Clean all text columns
+    # Clean all text
     for col in stock_df.columns:
         stock_df[col] = stock_df[col].astype(str).str.strip()
 
@@ -89,21 +89,19 @@ def load_sheets():
             .str.strip()
         )
 
-    # Convert Date Required → MonthNorm
-    date_col = None
-    for c in stock_df.columns:
-        if "date" in c.lower() and "required" in c.lower():
-            date_col = c
-            break
-
-    if date_col:
-        stock_df[date_col] = pd.to_datetime(stock_df[date_col], errors="coerce")
+    # MonthNorm derived from Month Required TEXT column
+    if "Month Required" in stock_df.columns:
         stock_df["MonthNorm"] = (
-            stock_df[date_col].dt.strftime("%B %Y").str.lower()
+            stock_df["Month Required"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
         )
+    else:
+        stock_df["MonthNorm"] = None
 
     # Packs cleanup
-    if "Packs" in stock_df:
+    if "Packs" in stock_df.columns:
         stock_df["Packs_num"] = (
             stock_df["Packs"]
             .astype(str)
@@ -112,7 +110,7 @@ def load_sheets():
         stock_df["Packs_num"] = pd.to_numeric(stock_df["Packs_num"], errors="coerce")
 
     # Status normalization
-    if "Status" in stock_df:
+    if "Status" in stock_df.columns:
         def normalize_status(t):
             t = t.lower().strip()
             aliases = ["inv", "invo", "invoice", "invoiced", "invc", "inv.", "invoicing"]
@@ -120,6 +118,7 @@ def load_sheets():
                 if t == a or t.startswith(a):
                     return "invoiced"
             return t
+
         stock_df["Status"] = stock_df["Status"].apply(normalize_status)
 
     # ---------------- SUMMARY SHEET ----------------
@@ -135,7 +134,7 @@ def load_sheets():
     # Numeric cleanup
     numeric_cols = ["AVAILABLE", "ORDERED", "LANDED", "Invoiced"]
     for col in numeric_cols:
-        if col in summary_df:
+        if col in summary_df.columns:
             summary_df[col + "_num"] = summary_df[col].str.replace(r"[^0-9.]", "", regex=True)
             summary_df[col + "_num"] = pd.to_numeric(summary_df[col + "_num"], errors="coerce")
 
@@ -143,13 +142,13 @@ def load_sheets():
 
 
 # ================================================================
-#  MANUAL REFRESH BUTTON — NOW USING st.stop()
+#  MANUAL REFRESH BUTTON — SAFE WITH st.stop()
 # ================================================================
 st.write(" ")
 if st.button("🔄 Refresh Google Sheets Now"):
     st.cache_data.clear()
     st.success("Google Sheets data refreshed!")
-    st.stop()   # safe refresh without crashing
+    st.stop()
 
 
 # ================================================================
@@ -159,7 +158,7 @@ def ai_query(df, question):
     cols = list(df.columns)
 
     prompt = f"""
-Convert the user's question into a single Python expression using ONLY 
+Convert the user's question into a single pandas expression using ONLY 
 the DataFrame named df.
 
 Columns available:
@@ -170,8 +169,8 @@ Rules:
 - Use *_num numeric columns.
 - Use MonthNorm for month filtering.
 - Use Status for status filtering.
-- Return ONLY code (no markdown, no explanation).
-- Must return a scalar, Series, or DataFrame.
+- Return ONLY raw Python code. No markdown or explanation.
+- Code must return a scalar, Series, or DataFrame.
 
 User question:
 {question}
@@ -180,27 +179,30 @@ User question:
     try:
         resp = client.chat.completions.create(
             model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": prompt}]
         )
         ai_code = resp.choices[0].message.content.strip()
 
     except Exception as e:
-        return None, None, f"OpenAI error: {e}"
+        return None, None, f"OpenAI API error: {e}"
 
     try:
         result = eval(ai_code, {"df": df, "pd": pd, "np": np}, {})
     except Exception as e:
         return ai_code, None, f"Execution error: {e}"
 
-    result_text = result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
+    result_text = (
+        result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
+    )
+
     return ai_code, result_text, None
 
 
 # ================================================================
 #  STREAMLIT UI
 # ================================================================
-st.title("📦 Inventory Chatbot — Live Updating")
-st.caption("Auto-refresh enabled. Google Sheets updates appear every 30–60 seconds.")
+st.title("📦 Inventory Chatbot — Correct Month Required Logic")
+st.caption("Now using the correct 'Month Required' column. Live-updating via auto-refresh.")
 
 stock_df, summary_df = load_sheets()
 
@@ -219,16 +221,13 @@ if st.checkbox("Show sheet preview"):
 #  DEBUG PANEL
 # ================================================================
 if st.checkbox("🔍 DEBUG — Show rows for Product Code 20373"):
-    st.subheader("Rows for Product Code 20373")
+    st.subheader("Debug rows for 20373")
 
     debug_rows = stock_df[stock_df["Product Code"] == "20373"]
     st.dataframe(debug_rows)
 
-    if "MonthNorm" in stock_df:
+    if "MonthNorm" in debug_rows:
         st.write("MonthNorm values:", debug_rows["MonthNorm"].unique())
-
-    if "Status" in stock_df:
-        st.write("Status values:", debug_rows["Status"].unique())
 
     st.write("Rows where MonthNorm == 'november 2025'")
     st.dataframe(debug_rows[debug_rows["MonthNorm"] == "november 2025"])
@@ -246,7 +245,7 @@ if st.checkbox("🔍 DEBUG — Show rows for Product Code 20373"):
 
 
 # ================================================================
-#  QUESTION INPUT + AI EXECUTION
+#  QUESTION INPUT
 # ================================================================
 question = st.text_input("Ask your question:")
 
@@ -263,4 +262,4 @@ if st.button("Ask"):
         st.text(result_text)
 
 st.markdown("---")
-st.caption("🔐 Secure Secrets | 🔄 Auto-Refresh | ✔ Live Google Sheets Sync")
+st.caption("🔐 Secure Secrets | 🔄 Auto-Refresh | ✔ Month Required logic fixed")
