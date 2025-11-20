@@ -12,10 +12,10 @@ from google.oauth2 import service_account
 
 
 # ================================================================
-#  AUTO REFRESH (EVERY 30 SECONDS)
+#  AUTO REFRESH EVERY 30 SECONDS
 # ================================================================
 try:
-    st.autorefresh(interval=30000, key="auto_refresh")  # 30 seconds
+    st.autorefresh(interval=30000, key="auto_refresh")
 except:
     pass
 
@@ -66,7 +66,7 @@ SPREADSHEET_ID = "1UG_N-zkgwCpObWTgmg8EPS7-N08aqintu8h3kN8yRmM"
 WORKSHEET_NAME = "Stock"
 WORKSHEET_NAME2 = "Summary"
 
-@st.cache_data(show_spinner=True, ttl=60)  # Auto-refresh cache every 60 seconds
+@st.cache_data(show_spinner=True, ttl=60)
 def load_sheets():
     gc = google_auth()
 
@@ -77,7 +77,7 @@ def load_sheets():
     stock_df.columns = stock_df.iloc[0].str.strip()
     stock_df = stock_df[1:].reset_index(drop=True)
 
-    # Clean all text
+    # Clean all text columns
     for col in stock_df.columns:
         stock_df[col] = stock_df[col].astype(str).str.strip()
 
@@ -111,7 +111,7 @@ def load_sheets():
         )
         stock_df["Packs_num"] = pd.to_numeric(stock_df["Packs_num"], errors="coerce")
 
-    # Status normalization with invoice aliases
+    # Status normalization
     if "Status" in stock_df:
         def normalize_status(t):
             t = t.lower().strip()
@@ -120,7 +120,6 @@ def load_sheets():
                 if t == a or t.startswith(a):
                     return "invoiced"
             return t
-
         stock_df["Status"] = stock_df["Status"].apply(normalize_status)
 
     # ---------------- SUMMARY SHEET ----------------
@@ -144,13 +143,13 @@ def load_sheets():
 
 
 # ================================================================
-#  MANUAL REFRESH BUTTON
+#  MANUAL REFRESH BUTTON — NOW USING st.stop()
 # ================================================================
 st.write(" ")
 if st.button("🔄 Refresh Google Sheets Now"):
     st.cache_data.clear()
     st.success("Google Sheets data refreshed!")
-    st.experimental_rerun()
+    st.stop()   # safe refresh without crashing
 
 
 # ================================================================
@@ -171,7 +170,7 @@ Rules:
 - Use *_num numeric columns.
 - Use MonthNorm for month filtering.
 - Use Status for status filtering.
-- Return ONLY code. No markdown or explanation.
+- Return ONLY code (no markdown, no explanation).
 - Must return a scalar, Series, or DataFrame.
 
 User question:
@@ -184,6 +183,7 @@ User question:
             messages=[{"role": "user", "content": prompt}],
         )
         ai_code = resp.choices[0].message.content.strip()
+
     except Exception as e:
         return None, None, f"OpenAI error: {e}"
 
@@ -192,11 +192,7 @@ User question:
     except Exception as e:
         return ai_code, None, f"Execution error: {e}"
 
-    if isinstance(result, (pd.DataFrame, pd.Series)):
-        result_text = result.to_string()
-    else:
-        result_text = str(result)
-
+    result_text = result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
     return ai_code, result_text, None
 
 
@@ -204,7 +200,7 @@ User question:
 #  STREAMLIT UI
 # ================================================================
 st.title("📦 Inventory Chatbot — Live Updating")
-st.caption("Auto-refresh enabled. Google Sheets updates appear every 30–60s.")
+st.caption("Auto-refresh enabled. Google Sheets updates appear every 30–60 seconds.")
 
 stock_df, summary_df = load_sheets()
 
@@ -228,8 +224,11 @@ if st.checkbox("🔍 DEBUG — Show rows for Product Code 20373"):
     debug_rows = stock_df[stock_df["Product Code"] == "20373"]
     st.dataframe(debug_rows)
 
-    st.write("MonthNorm values:", debug_rows["MonthNorm"].unique())
-    st.write("Status values:", debug_rows["Status"].unique())
+    if "MonthNorm" in stock_df:
+        st.write("MonthNorm values:", debug_rows["MonthNorm"].unique())
+
+    if "Status" in stock_df:
+        st.write("Status values:", debug_rows["Status"].unique())
 
     st.write("Rows where MonthNorm == 'november 2025'")
     st.dataframe(debug_rows[debug_rows["MonthNorm"] == "november 2025"])
@@ -264,4 +263,4 @@ if st.button("Ask"):
         st.text(result_text)
 
 st.markdown("---")
-st.caption("🔐 Secure Secrets | 🔄 Auto-Refresh | ✔ Live Google Sheet Sync")
+st.caption("🔐 Secure Secrets | 🔄 Auto-Refresh | ✔ Live Google Sheets Sync")
