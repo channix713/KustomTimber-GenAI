@@ -1,6 +1,7 @@
 # ======================================================================
 # STREAMLIT GOOGLE SHEETS CHATBOT (Stock + Summary)
-# With isolated dataframes, strict validator, auto-refresh, case-insensitive
+# With isolated dataframes, strict validator, SAFE .iloc[0] handling,
+# auto-refresh, case-insensitive questions.
 # ======================================================================
 
 import streamlit as st
@@ -16,6 +17,7 @@ from dotenv import load_dotenv
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
 from openai import OpenAI
+
 
 # ======================================================================
 # STREAMLIT SETUP
@@ -89,14 +91,12 @@ if st.button("🔄 Refresh Sheets Now"):
 
 
 # ======================================================================
-# LOAD SHEETS
+# LOAD SHEETS (cached)
 # ======================================================================
 @st.cache_data(show_spinner=True)
 def load_sheets():
 
-    # =======================
-    # STOCK SHEET
-    # =======================
+    # STOCK
     ws = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_STOCK)
     stock_df = pd.DataFrame(ws.get_all_values())
     stock_df.columns = stock_df.iloc[0].str.strip()
@@ -107,9 +107,7 @@ def load_sheets():
         if col in stock_df:
             stock_df[col] = pd.to_numeric(stock_df[col], errors="coerce")
 
-    # =======================
-    # SUMMARY SHEET
-    # =======================
+    # SUMMARY
     ws2 = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_SUMMARY)
     summary_df = pd.DataFrame(ws2.get_all_values())
     summary_df.columns = summary_df.iloc[0].str.strip()
@@ -120,11 +118,12 @@ def load_sheets():
         "COST","PACK SIZE","ORDERED","LANDED","Shipped","SOH (DC)",
         "Packs (DC)","Invoiced","AVAILABLE","SOH + SOO","SOO COST","SOH COST"
     ]
+
     for col in numeric_cols:
         if col in summary_df:
             summary_df[col] = pd.to_numeric(summary_df[col], errors="coerce")
 
-    # ALWAYS create AVAILABLE_num, even if AVAILABLE missing
+    # ALWAYS create AVAILABLE_num safely
     summary_df["AVAILABLE_num"] = pd.to_numeric(summary_df.get("AVAILABLE", np.nan), errors="coerce")
 
     return stock_df, summary_df
@@ -142,13 +141,13 @@ def extract_columns(code_text):
     pattern = r'\[\s*[\'"]([^\'"]+)[\'"]\s*\]'
     return re.findall(pattern, code_text)
 
-def validate_ai_code(ai_code: str, df_columns):
-    # Block forbidden keywords
+def validate_ai_code(ai_code, df_columns):
+    # Block dangerous commands
     for bad in FORBIDDEN:
         if bad in ai_code:
             return False, f"Forbidden keyword detected: {bad}"
 
-    # Must define result
+    # Must contain result =
     if "result =" not in ai_code:
         return False, "Missing: result ="
 
@@ -158,7 +157,7 @@ def validate_ai_code(ai_code: str, df_columns):
     except Exception as e:
         return False, f"Syntax error: {e}"
 
-    # Validate columns (case-insensitive)
+    # Check column usage
     lower_cols = [c.lower() for c in df_columns]
     for col in extract_columns(ai_code):
         if col.lower() not in lower_cols:
@@ -168,14 +167,12 @@ def validate_ai_code(ai_code: str, df_columns):
 
 
 # ======================================================================
-# AI ENGINE WITH DATAFRAME ISOLATION
+# AI ENGINE WITH SAFE ILOC HANDLING
 # ======================================================================
 def ask_sheet(question, df_name):
 
-    # CASE INSENSITIVE
     q = question.lower().strip()
 
-    # Pick dataframe
     if df_name == "stock":
         df = stock_df
         df_label = "stock_df"
@@ -194,32 +191,33 @@ def ask_sheet(question, df_name):
     prompt = f"""
 You are an expert pandas code generator.
 
-You work ONLY with this dataframe:
+You work ONLY with:
 
 DATAFRAME: {df_label}
 COLUMNS: {cols}
 
-MANDATORY RULES:
-- Use ONLY {df_label}, never any other dataframe.
+RULES:
+- Use ONLY dataframe {df_label}
 - Product ID column = "{id_col}"
 - Main numeric column = "{value_col}"
 - Forbidden columns: {forbidden}
-- Use EXACT column names shown.
+- Use EXACT column names shown
+- NEVER use .iloc[0] — ALWAYS use .head(1)
 - Final line MUST be: result = <value>
-- Output ONLY Python code.
+- Output only Python code
 
 QUESTION:
 {q}
 """
 
-    # --- AI ---
     resp = client.chat.completions.create(
         model=MODEL,
         messages=[{"role":"user","content":prompt}]
     )
+
     ai_code = resp.choices[0].message.content.strip()
 
-    # CLEAN CODE
+    # CLEAN & SANITIZE
     ai_code = (
         ai_code.replace("```python","")
                .replace("```","")
@@ -229,66 +227,24 @@ QUESTION:
                .strip()
     )
 
-    # VALIDATE
+    # AUTO-FIX .iloc[0]
+    if ".iloc[0]" in ai_code:
+        ai_code = ai_code.replace(".iloc[0]", ".head(1)")
+
+    # VALIDATE CODE
     ok, msg = validate_ai_code(ai_code, df.columns)
     if not ok:
         return f"❌ AI Code Validation Failed:\n{msg}\n\nCODE:\n{ai_code}"
 
-    # EXECUTE
+    # SAFE EXECUTION
     try:
         exec_locals = {df_label: df}
         exec(ai_code, {}, exec_locals)
         result = exec_locals["result"]
-    except Exception as e:
-        return f"❌ Error executing AI code: {e}\n\nCODE:\n{ai_code}"
 
-    # FORMAT RESULT
-    result_text = (
-        result.to_string() if isinstance(result,(pd.DataFrame,pd.Series)) 
-        else str(result)
-    )
+        # EMPTY RESULT HANDLER
+        if isinstance(result, (pd.DataFrame, pd.Series)) and result.empty:
+            return f"""
+⚠️ No matching rows found.
 
-    # EXPLAIN
-    explain_prompt = f"""
-Explain clearly:
-
-QUESTION:
-{question}
-
-RESULT:
-{result_text}
-"""
-    explanation = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role":"user","content":explain_prompt}]
-    ).choices[0].message.content
-
-    return explanation
-
-
-# DEBUG – SHOW SUMMARY COLUMNS
-st.subheader("🔎 Debug Columns")
-st.write("Summary_df columns:", list(summary_df.columns))
-
-
-# ======================================================================
-# UI
-# ======================================================================
-st.subheader("Choose Sheet to Query")
-sheet_choice = st.selectbox("Sheet:", ["Stock Sheet", "Summary Sheet"])
-
-df_name = "stock" if sheet_choice == "Stock Sheet" else "summary"
-df_selected = stock_df if df_name == "stock" else summary_df
-
-if st.checkbox("Show DataFrame Preview"):
-    st.dataframe(df_selected, use_container_width=True)
-
-st.subheader("Ask a question:")
-question = st.text_input("Ask anything about the selected sheet (case-insensitive):")
-
-if st.button("Ask"):
-    if not question.strip():
-        st.warning("Please enter a question.")
-    else:
-        st.markdown("### Chatbot Answer:")
-        st.write(ask_sheet(question, df_name))
+Tried running:
