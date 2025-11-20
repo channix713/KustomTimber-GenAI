@@ -77,7 +77,7 @@ def load_sheets():
     stock_df.columns = stock_df.iloc[0].str.strip()
     stock_df = stock_df[1:].reset_index(drop=True)
 
-    # Clean all text
+    # Clean all text fields
     for col in stock_df.columns:
         stock_df[col] = stock_df[col].astype(str).str.strip()
 
@@ -89,7 +89,7 @@ def load_sheets():
             .str.strip()
         )
 
-    # MonthNorm derived from Month Required TEXT column
+    # MonthNorm from Month Required TEXT column
     if "Month Required" in stock_df.columns:
         stock_df["MonthNorm"] = (
             stock_df["Month Required"]
@@ -100,7 +100,7 @@ def load_sheets():
     else:
         stock_df["MonthNorm"] = None
 
-    # Packs cleanup
+    # Packs cleanup → Packs_num
     if "Packs" in stock_df.columns:
         stock_df["Packs_num"] = (
             stock_df["Packs"]
@@ -131,7 +131,6 @@ def load_sheets():
     for col in summary_df.columns:
         summary_df[col] = summary_df[col].astype(str).str.strip()
 
-    # Numeric cleanup
     numeric_cols = ["AVAILABLE", "ORDERED", "LANDED", "Invoiced"]
     for col in numeric_cols:
         if col in summary_df.columns:
@@ -142,7 +141,7 @@ def load_sheets():
 
 
 # ================================================================
-#  MANUAL REFRESH BUTTON — SAFE WITH st.stop()
+#  MANUAL REFRESH BUTTON (SAFE)
 # ================================================================
 st.write(" ")
 if st.button("🔄 Refresh Google Sheets Now"):
@@ -152,25 +151,27 @@ if st.button("🔄 Refresh Google Sheets Now"):
 
 
 # ================================================================
-#  AI QUERY ENGINE
+#  AI QUERY ENGINE — NOW ENFORCES Packs_num
 # ================================================================
 def ai_query(df, question):
     cols = list(df.columns)
 
     prompt = f"""
-Convert the user's question into a single pandas expression using ONLY 
-the DataFrame named df.
+You convert the user's question into a single Python pandas expression.
+
+THE DATAFRAME IS NAMED df.
+
+IMPORTANT RULES:
+- ALWAYS use df["Packs_num"] for packs.
+- NEVER use df["Packs"] — that column contains text like "8m2".
+- ANY question mentioning "pack" MUST use Packs_num.
+- Use df["MonthNorm"] for month filtering.
+- Use df["Status"] for status filtering.
+- Use numeric *_num fields whenever available.
+- Output ONLY valid Python code — no explanation, no quotes.
 
 Columns available:
 {cols}
-
-Rules:
-- Use df["column"] syntax.
-- Use *_num numeric columns.
-- Use MonthNorm for month filtering.
-- Use Status for status filtering.
-- Return ONLY raw Python code. No markdown or explanation.
-- Code must return a scalar, Series, or DataFrame.
 
 User question:
 {question}
@@ -186,6 +187,7 @@ User question:
     except Exception as e:
         return None, None, f"OpenAI API error: {e}"
 
+    # Execute safely
     try:
         result = eval(ai_code, {"df": df, "pd": pd, "np": np}, {})
     except Exception as e:
@@ -201,10 +203,14 @@ User question:
 # ================================================================
 #  STREAMLIT UI
 # ================================================================
-st.title("📦 Inventory Chatbot — Correct Month Required Logic")
-st.caption("Now using the correct 'Month Required' column. Live-updating via auto-refresh.")
+st.title("📦 Inventory Chatbot — Packs_num Enforced")
+st.caption("Now fully accurate for packs queries.")
 
 stock_df, summary_df = load_sheets()
+
+# Save in session state
+st.session_state["stock_df"] = stock_df
+st.session_state["summary_df"] = summary_df
 
 sheet_choice = st.selectbox(
     "Select which sheet to query:",
@@ -221,21 +227,21 @@ if st.checkbox("Show sheet preview"):
 #  DEBUG PANEL
 # ================================================================
 if st.checkbox("🔍 DEBUG — Show rows for Product Code 20373"):
-    st.subheader("Debug rows for 20373")
+    st.subheader("Debug for Product Code 20373")
 
     debug_rows = stock_df[stock_df["Product Code"] == "20373"]
     st.dataframe(debug_rows)
 
-    if "MonthNorm" in debug_rows:
-        st.write("MonthNorm values:", debug_rows["MonthNorm"].unique())
+    st.write("MonthNorm:", debug_rows["MonthNorm"].unique())
+    st.write("Status:", debug_rows["Status"].unique())
 
-    st.write("Rows where MonthNorm == 'november 2025'")
+    st.write("Rows MonthNorm == 'november 2025'")
     st.dataframe(debug_rows[debug_rows["MonthNorm"] == "november 2025"])
 
-    st.write("Rows where Status == 'invoiced'")
+    st.write("Rows Status == 'invoiced'")
     st.dataframe(debug_rows[debug_rows["Status"] == "invoiced"])
 
-    st.write("Rows matching ALL conditions:")
+    st.write("Rows matching BOTH:")
     st.dataframe(
         debug_rows[
             (debug_rows["MonthNorm"] == "november 2025") &
@@ -262,4 +268,4 @@ if st.button("Ask"):
         st.text(result_text)
 
 st.markdown("---")
-st.caption("🔐 Secure Secrets | 🔄 Auto-Refresh | ✔ Month Required logic fixed")
+st.caption("🔐 Secure Secrets | 🔄 Auto-Refresh | ✔ Packs_num Enforced")
