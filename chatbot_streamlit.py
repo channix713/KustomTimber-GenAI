@@ -56,7 +56,7 @@ def google_auth():
 # ================================================================
 #  LOAD SHEETS
 # ================================================================
-SPREADSHEET_ID = "1UG_N-xxxxxxxxxxxxxxxxx"
+SPREADSHEET_ID = "1UG_N-zkgwCpObWTgmg8EPS7-N08aqintu8h3kN8yRmM"
 WORKSHEET_NAME = "Stock"
 WORKSHEET_NAME2 = "Summary"
 
