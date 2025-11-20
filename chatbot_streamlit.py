@@ -209,6 +209,52 @@ df = stock_df if sheet_choice.startswith("Stock") else summary_df
 if st.checkbox("Show sheet preview"):
     st.dataframe(df.head(200))
 
+# ================================================================
+# DEBUG BLOCK — HELPS US SEE WHY YOU GET ZERO
+# ================================================================
+if st.checkbox("🔍 DEBUG — Show rows for Product Code 20373"):
+    st.subheader("🔎 All rows for Product Code 20373 in Stock Sheet")
+
+    if "Product Code" in stock_df.columns:
+        debug_rows = stock_df[stock_df["Product Code"] == "20373"]
+
+        st.write("All rows where Product Code == 20373:")
+        st.dataframe(debug_rows)
+
+        # Show Date Required values
+        date_cols = [c for c in stock_df.columns if "date" in c.lower()]
+        if date_cols:
+            st.write("Date columns found:", date_cols)
+            st.dataframe(debug_rows[date_cols])
+
+        # Show month normalization results
+        if "MonthNorm" in stock_df.columns:
+            st.write("Unique MonthNorm values for this product:")
+            st.write(debug_rows["MonthNorm"].unique())
+
+            st.write("Rows where MonthNorm == 'november 2025':")
+            st.dataframe(debug_rows[debug_rows["MonthNorm"] == "november 2025"])
+
+        # Show status values
+        if "Status" in stock_df.columns:
+            st.write("Unique Status values for this product:")
+            st.write(debug_rows["Status"].unique())
+
+            st.write("Rows where Status == 'invoiced':")
+            st.dataframe(debug_rows[debug_rows["Status"] == "invoiced"])
+
+        # Final combined filter
+        st.write("Rows matching ALL conditions:")
+        st.dataframe(
+            debug_rows[
+                (debug_rows["MonthNorm"] == "november 2025") &
+                (debug_rows["Status"] == "invoiced")
+            ]
+        )
+    else:
+        st.error("No 'Product Code' column found in stock_df.")
+
+
 
 # DEBUG
 if st.checkbox("Debug product 20373 in Stock Sheet"):
