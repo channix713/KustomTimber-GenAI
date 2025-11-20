@@ -239,7 +239,8 @@ def apply_plan(plan: dict, df: pd.DataFrame, df_name: str):
       "filters": [
         {"column": "ITEM #", "op": "==", "value": 20373},
         {"column": "Month", "op": "==", "value": "November 2025"},
-        {"column": "Status", "op": "==", "value": "Invoiced"}
+        {"column": "Status", "op": "==", "value": "Invoiced"},
+        {"column": "Status", "op": "==", "value": "invoiced"}
       ],
       "metric": "AVAILABLE_num",
       "aggregation": "sum" | "max" | "min" | "rows" | "list",
