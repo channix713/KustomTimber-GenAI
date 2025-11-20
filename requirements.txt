@@ -1,6 +1,11 @@
 streamlit
-pandas
-gspread
-google-auth
 openai
+gspread
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
 python-dotenv
+pandas
+numpy
+oauth2client
