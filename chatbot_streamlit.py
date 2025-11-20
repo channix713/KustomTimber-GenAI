@@ -80,8 +80,8 @@ WS_SUMMARY = "Summary"
 # ======================================================================
 def refresh_sheets():
     st.cache_data.clear()
+    st.session_state["refresh_triggered"] = True
     st.success("🔄 Sheets refreshed!")
-    st.experimental_rerun()
 
 if st.button("🔄 Refresh Sheets Now"):
     refresh_sheets()
