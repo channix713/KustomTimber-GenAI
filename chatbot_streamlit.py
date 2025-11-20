@@ -1,6 +1,6 @@
 # ======================================================================
 # STREAMLIT GOOGLE SHEETS CHATBOT (Stock + Summary)
-# With strict validator, df isolation, no-crash indexing, auto-refresh
+# FINAL VERSION — with python-prefix fix & safe indexing
 # ======================================================================
 
 import streamlit as st
@@ -25,7 +25,7 @@ st.title("📦 Inventory Chatbot — Stock & Summary Sheets")
 
 
 # ======================================================================
-# LOAD OPENAI API KEY
+# LOAD OPENAI KEY (your required method)
 # ======================================================================
 try:
     ENV_PATH = Path(__file__).parent / "OpenAIKey.env"
@@ -36,7 +36,7 @@ load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 if not OPENAI_API_KEY:
-    st.error("❌ Missing OPENAI_API_KEY in secrets or .env")
+    st.error("❌ Missing OPENAI_API_KEY in secrets or env")
     st.stop()
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -53,7 +53,7 @@ SCOPES = [
 
 def get_google_creds():
     if "GOOGLE_SERVICE_ACCOUNT_JSON" not in st.secrets:
-        st.error("❌ Missing GOOGLE_SERVICE_ACCOUNT_JSON in secrets.")
+        st.error("❌ GOOGLE_SERVICE_ACCOUNT_JSON missing in secrets.")
         st.stop()
     try:
         info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
@@ -76,7 +76,7 @@ WS_SUMMARY = "Summary"
 
 
 # ======================================================================
-# MANUAL REFRESH BUTTON
+# AUTO-REFRESH BUTTON
 # ======================================================================
 def refresh_sheets():
     st.cache_data.clear()
@@ -93,7 +93,7 @@ if st.button("🔄 Refresh Sheets Now"):
 @st.cache_data(show_spinner=True)
 def load_sheets():
 
-    # STOCK
+    # ---------- STOCK ----------
     ws = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_STOCK)
     stock_df = pd.DataFrame(ws.get_all_values())
     stock_df.columns = stock_df.iloc[0].str.strip()
@@ -103,7 +103,7 @@ def load_sheets():
         if col in stock_df:
             stock_df[col] = pd.to_numeric(stock_df[col], errors="coerce")
 
-    # SUMMARY
+    # ---------- SUMMARY ----------
     ws2 = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_SUMMARY)
     summary_df = pd.DataFrame(ws2.get_all_values())
     summary_df.columns = summary_df.iloc[0].str.strip()
@@ -120,6 +120,7 @@ def load_sheets():
     summary_df["AVAILABLE_num"] = pd.to_numeric(summary_df.get("AVAILABLE", np.nan), errors="coerce")
 
     return stock_df, summary_df
+
 
 stock_df, summary_df = load_sheets()
 
@@ -140,10 +141,10 @@ def validate_ai_code(ai_code: str, df_columns):
 
     for bad in FORBIDDEN:
         if bad in ai_code.lower():
-            return False, f"Forbidden pattern: {bad}"
+            return False, f"Forbidden pattern detected: {bad}"
 
     if "result =" not in ai_code:
-        return False, "Missing: result ="
+        return False, "Missing required: result ="
 
     try:
         ast.parse(ai_code)
@@ -153,7 +154,7 @@ def validate_ai_code(ai_code: str, df_columns):
     lower_cols = [c.lower() for c in df_columns]
     for col in extract_columns(ai_code):
         if col.lower() not in lower_cols:
-            return False, f"Invalid column: {col}"
+            return False, f"Invalid column used: {col}"
 
     return True, "OK"
 
@@ -165,21 +166,23 @@ def ask_sheet(question, df_name):
 
     q = question.lower().strip()
 
+    # Pick dataframe + rules
     if df_name == "stock":
         df = stock_df
         df_label = "stock_df"
         id_col = "Product Code"
         numeric_col = "PACKS"
-        forbidden = ["ITEM #", "AVAILABLE", "AVAILABLE_num"]
+        forbidden_cols = ["ITEM #", "AVAILABLE", "AVAILABLE_num"]
     else:
         df = summary_df
         df_label = "summary_df"
         id_col = "ITEM #"
         numeric_col = "AVAILABLE_num"
-        forbidden = ["Product Code", "PACKS", "Month"]
+        forbidden_cols = ["Product Code", "PACKS", "Month"]
 
     cols = list(df.columns)
 
+    # ------------------ AI PROMPT ------------------
     prompt = f"""
 You generate SAFE pandas code.
 
@@ -187,14 +190,14 @@ DATAFRAME: {df_label}
 COLUMNS: {cols}
 
 RULES:
-- Use only {df_label}.
-- Filter product using column "{id_col}".
-- Numeric operations use "{numeric_col}".
-- Forbidden columns: {forbidden}.
-- DO NOT use indexing like .iloc[0], values[0], to_numpy(), or [0].
-- For single values ALWAYS use: .sum(), .max(), .min(), or .head(1)
+- Only use {df_label}.
+- Product ID column: "{id_col}"
+- Numeric column: "{numeric_col}"
+- Forbidden columns: {forbidden_cols}
+- NEVER use .iloc, .values, .to_numpy, or [0]
+- To get a single value ALWAYS use: .sum(), .max(), .min(), or .head(1)
 - Final line MUST be: result = <value>
-- ONLY output Python code.
+- Output ONLY pure python code.
 
 QUESTION:
 {q}
@@ -202,18 +205,32 @@ QUESTION:
 
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role":"user","content":prompt}]
     )
 
     ai_code = resp.choices[0].message.content.strip()
-    ai_code = ai_code.replace("```","").replace("```python","").strip()
+
+    # ---------------- CLEAN CODE ----------------
+    ai_code = ai_code.replace("```python","").replace("```","").strip()
+    ai_code = ai_code.replace("“", '"').replace("”", '"').replace("’", "'")
+
+    # Remove python-prefixes
+    ai_code = re.sub(r"^python\s+", "", ai_code)
+    ai_code = re.sub(r"^python:", "", ai_code)
+    ai_code = re.sub(r"^py\s+", "", ai_code)
+    ai_code = ai_code.strip()
+
+    # BLOCK unwanted indexing
+    ai_code = ai_code.replace(".iloc[0]", "")
+    ai_code = re.sub(r"\.values *\[[^\]]+\]", "", ai_code)
+    ai_code = re.sub(r"\.to_numpy *\([^\)]*\)", "", ai_code)
 
     # VALIDATE
     ok, msg = validate_ai_code(ai_code, df.columns)
     if not ok:
         return f"❌ AI Code Validation Failed:\n{msg}\n\nCODE:\n{ai_code}"
 
-    # EXECUTE
+    # ---------------- EXECUTE ----------------
     try:
         exec_locals = {df_label: df}
         exec(ai_code, {}, exec_locals)
@@ -225,13 +242,13 @@ QUESTION:
     except Exception as e:
         return f"❌ Error executing AI code: {e}\n\nCODE:\n{ai_code}"
 
-    # FORMAT
+    # ---------------- FORMAT RESULT ----------------
     result_text = (
         result.to_string() if isinstance(result,(pd.DataFrame,pd.Series))
         else str(result)
     )
 
-    # EXPLAIN
+    # ---------------- EXPLAIN ----------------
     explain_prompt = f"""
 Explain clearly:
 
