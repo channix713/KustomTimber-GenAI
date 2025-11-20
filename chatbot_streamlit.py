@@ -1,6 +1,6 @@
 # ======================================================================
 # STREAMLIT GOOGLE SHEETS CHATBOT (Stock + Summary)
-# With get_google_creds(), strict validator, auto-refresh, case-insensitive
+# With isolated dataframes, strict validator, auto-refresh, case-insensitive
 # ======================================================================
 
 import streamlit as st
@@ -93,32 +93,40 @@ if st.button("🔄 Refresh Sheets Now"):
 # ======================================================================
 @st.cache_data(show_spinner=True)
 def load_sheets():
-    # STOCK
+
+    # =======================
+    # STOCK SHEET
+    # =======================
     ws = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_STOCK)
     stock_df = pd.DataFrame(ws.get_all_values())
     stock_df.columns = stock_df.iloc[0].str.strip()
     stock_df = stock_df[1:].reset_index(drop=True)
     stock_df.replace(r'^\s*$', np.nan, regex=True, inplace=True)
 
-    # Convert numeric fields
     for col in ["Product Code", "PACKS"]:
         if col in stock_df:
             stock_df[col] = pd.to_numeric(stock_df[col], errors="coerce")
 
-    # SUMMARY
+    # =======================
+    # SUMMARY SHEET
+    # =======================
     ws2 = gc.open_by_key(SPREADSHEET_ID).worksheet(WS_SUMMARY)
     summary_df = pd.DataFrame(ws2.get_all_values())
     summary_df.columns = summary_df.iloc[0].str.strip()
     summary_df = summary_df[1:].reset_index(drop=True)
     summary_df.replace(r'^\s*$', np.nan, regex=True, inplace=True)
 
-    summary_numeric = [
-        "COST","PACK SIZE","ORDERED","LANDED","Shipped","SOH (DC)","Packs (DC)",
-        "Invoiced","AVAILABLE","SOH + SOO","SOO COST","SOH COST"
+    numeric_cols = [
+        "COST","PACK SIZE","ORDERED","LANDED","Shipped","SOH (DC)",
+        "Packs (DC)","Invoiced","AVAILABLE","SOH + SOO","SOO COST","SOH COST"
     ]
-    for col in summary_numeric:
+    for col in numeric_cols:
         if col in summary_df:
             summary_df[col] = pd.to_numeric(summary_df[col], errors="coerce")
+
+    # Create AVAILABLE_num for consistency
+    if "AVAILABLE" in summary_df:
+        summary_df["AVAILABLE_num"] = pd.to_numeric(summary_df["AVAILABLE"], errors="coerce")
 
     return stock_df, summary_df
 
@@ -132,105 +140,119 @@ stock_df, summary_df = load_sheets()
 FORBIDDEN = ["import", "open(", "os.", "sys.", "subprocess", "__", "eval", "exec"]
 
 def extract_columns(code_text):
-    """Extract columns used inside df['col'] or df["col"] patterns."""
     pattern = r'\[\s*[\'"]([^\'"]+)[\'"]\s*\]'
     return re.findall(pattern, code_text)
 
 def validate_ai_code(ai_code: str, df_columns):
-    """Strict security + correctness validation."""
     # Block forbidden keywords
     for bad in FORBIDDEN:
         if bad in ai_code:
             return False, f"Forbidden keyword detected: {bad}"
 
-    # Must define result =
-    if not re.search(r"result\s*=", ai_code):
-        return False, "Missing required: result ="
+    # Must define result
+    if "result =" not in ai_code:
+        return False, "Missing: result ="
 
-    # Python syntax validation
+    # Check syntax
     try:
         ast.parse(ai_code)
     except Exception as e:
         return False, f"Syntax error: {e}"
 
-    # Column validation (case-insensitive)
-    df_cols_lower = [c.lower() for c in df_columns]
+    # Validate columns (case-insensitive)
+    lower_cols = [c.lower() for c in df_columns]
     for col in extract_columns(ai_code):
-        if col.lower() not in df_cols_lower:
-            return False, f"Invalid column used: '{col}'"
+        if col.lower() not in lower_cols:
+            return False, f"Invalid column (not in dataframe): {col}"
 
     return True, "OK"
 
 
 # ======================================================================
-# AI ENGINE
+# AI ENGINE WITH DATAFRAME ISOLATION
 # ======================================================================
 def ask_sheet(question, df_name):
 
-    # CASE-INSENSITIVE NORMALIZATION
-    question_normalized = question.lower()
+    # CASE INSENSITIVE
+    q = question.lower().strip()
 
-    df = stock_df if df_name == "stock" else summary_df
+    # Pick dataframe
+    if df_name == "stock":
+        df = stock_df
+        df_label = "stock_df"
+        id_col = "Product Code"
+        value_col = "PACKS"
+        forbidden_cols = ["ITEM #", "AVAILABLE", "AVAILABLE_num"]
+    else:
+        df = summary_df
+        df_label = "summary_df"
+        id_col = "ITEM #"
+        value_col = "AVAILABLE_num"
+        forbidden_cols = ["Product Code", "PACKS", "Month"]
+
     cols = list(df.columns)
 
+    # ---- AI PROMPT ----
     prompt = f"""
 You are an expert pandas code generator.
 
-DATAFRAME = {df_name}_df
-COLUMNS = {cols}
+You are working ONLY with this dataframe:
 
-STRICT RULES:
-1. Only use EXACT column names shown above (case-insensitive allowed).
-2. For date/month filters → use 'Month'
-3. DO NOT use 'Month Required'
-4. For pack-related questions → always use 'PACKS'
-5. Return ONLY valid python code.
-6. Final line must set:
+DATAFRAME NAME: {df_label}
+COLUMNS: {cols}
+
+You MUST follow these rules:
+
+1. ONLY use the dataframe {df_label}.
+2. Product ID column = "{id_col}"
+3. Main numeric column = "{value_col}"
+4. Forbidden columns (NEVER use):
+   {forbidden_cols}
+5. Use EXACT column names as shown above.
+6. Final line MUST be:
        result = <value>
+7. Output ONLY python code (no explanations).
 
-USER QUESTION:
-{question_normalized}
+QUESTION:
+{q}
 """
 
-    # Ask AI
+    # --- AI GENERATES PYTHON ---
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role":"user","content":prompt}]
     )
     ai_code = resp.choices[0].message.content.strip()
 
-    # Sanitize quotes + remove fenced code
-    ai_code = ai_code.replace("“", '"').replace("”", '"').replace("’", "'")
-    ai_code = ai_code.replace("```python", "").replace("```", "")
+    # CLEAN CODE
+    ai_code = (
+        ai_code.replace("```python", "")
+               .replace("```", "")
+               .replace("“", '"')
+               .replace("”", '"')
+               .replace("’", "'")
+               .strip()
+    )
 
-    # Replace Month Required hallucination
-    ai_code = ai_code.replace("['Month Required']", "['Month']")
-
-    # VALIDATE CODE
+    # VALIDATION
     ok, msg = validate_ai_code(ai_code, df.columns)
     if not ok:
         return f"❌ AI Code Validation Failed:\n{msg}\n\nCODE:\n{ai_code}"
 
-    # EXECUTE CODE
+    # EXECUTE
     try:
-        local_vars = {
-            "stock_df": stock_df,
-            "summary_df": summary_df,
-            df_name + "_df": df
-        }
+        local_vars = {df_label: df}
         exec(ai_code, {}, local_vars)
         result = local_vars["result"]
     except Exception as e:
         return f"❌ Error executing AI code: {e}\n\nCODE:\n{ai_code}"
 
-    # Format result
-    result_text = (
-        result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
-    )
+    # FORMAT
+    result_text = result.to_string() if isinstance(result, (pd.DataFrame, pd.Series)) else str(result)
 
-    # Ask AI to explain result
+    # EXPLAIN
     explain_prompt = f"""
-Explain this result clearly.
+Explain this result clearly:
 
 QUESTION:
 {question}
@@ -240,7 +262,7 @@ RESULT:
 """
     explanation = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": explain_prompt}]
+        messages=[{"role":"user","content":explain_prompt}]
     ).choices[0].message.content
 
     return explanation
@@ -258,7 +280,8 @@ df_selected = stock_df if df_name == "stock" else summary_df
 if st.checkbox("Show DataFrame Preview"):
     st.dataframe(df_selected, use_container_width=True)
 
-question = st.text_input("Ask your question (case-insensitive):")
+st.subheader("Ask a question:")
+question = st.text_input("Ask anything about the selected sheet (case-insensitive):")
 
 if st.button("Ask"):
     if not question.strip():
