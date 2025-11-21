@@ -592,7 +592,7 @@ Explain the answer clearly for a non-technical user.
 # ======================================================================
 # UI
 # ======================================================================
-st.subheader("Choose Sheet to Query")
+st.subheader("Choose Sheet to Query:\n Select stock_df to ask questions about IMR and summary_df for stock availability")
 sheet_choice = st.selectbox("Sheet:", ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"])
 
 df_name = "stock" if sheet_choice.startswith("Stock") else "summary"
