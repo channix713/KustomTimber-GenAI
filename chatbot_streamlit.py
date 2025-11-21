@@ -700,28 +700,35 @@ scroll_css = """
     max-height: 420px;
     overflow-y: auto;
     padding-right: 12px;
-    border: 1px solid #ddd;
+    border: 1px solid #555;
     border-radius: 10px;
-    background: #fafafa;
+    background: #2B2B2B;   /* dark background */
 }
+
+/* User bubble — dark grey */
 .chat-bubble-user {
-    background:#DCF8C6;
-    padding:10px;
+    background:#3A3A3A;
+    padding:12px;
     border-radius:10px;
-    margin-bottom:5px;
+    margin-bottom:8px;
     width:fit-content;
     max-width:80%;
+    color: #FFFFFF;  /* white text */
 }
+
+/* Bot bubble — darker grey */
 .chat-bubble-bot {
-    background:#F1F0F0;
-    padding:10px;
+    background:#1F1F1F;
+    padding:12px;
     border-radius:10px;
-    margin-bottom:5px;
+    margin-bottom:8px;
     width:fit-content;
     max-width:80%;
+    color: #FFFFFF; /* white text */
 }
 </style>
 """
+
 st.markdown(scroll_css, unsafe_allow_html=True)
 
 with chat_container:
