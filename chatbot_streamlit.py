@@ -1,11 +1,6 @@
 # ======================================================================
 # STREAMLIT GOOGLE SHEETS CHATBOT (Stock + Summary)
-# HYBRID JSON PLANNER VERSION (no exec, no eval)
-# With:
-#  - Automatic Status detection (Invoiced / Shipped / Landed / Ordered)
-#  - Ask user to specify Status if missing
-#  - Refactored utils, safer planner, better cache & refresh
-#  - Fully rewritten modern chat UI (fixed NameError)
+# PRODUCTION-SAFE VERSION (Chat UI + JSON Planner + Streamlit Cloud Safe)
 # ======================================================================
 
 import os
@@ -58,24 +53,24 @@ SUMMARY_NUMERIC_COLS = [
 ]
 
 MONTH_MAP = {
-    "jan": "January", "january": "January",
-    "feb": "February", "february": "February",
-    "mar": "March", "march": "March",
-    "apr": "April", "april": "April",
-    "may": "May",
-    "jun": "June", "june": "June",
-    "jul": "July", "july": "July",
-    "aug": "August", "august": "August",
-    "sep": "September", "sept": "September", "september": "September",
-    "oct": "October", "october": "October",
-    "nov": "November", "november": "November",
-    "dec": "December", "december": "December",
+    s: MONTH
+    for MONTH, keys in {
+        "January": ["jan", "january"],
+        "February": ["feb", "february"],
+        "March": ["mar", "march"],
+        "April": ["apr", "april"],
+        "May": ["may"],
+        "June": ["jun", "june"],
+        "July": ["jul", "july"],
+        "August": ["aug", "august"],
+        "September": ["sep", "sept", "september"],
+        "October": ["oct", "october"],
+        "November": ["nov", "november"],
+        "December": ["dec", "december"],
+    }.items() for s in keys
 }
 
-MONTH_NAMES = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-]
+MONTH_NAMES = list({v for v in MONTH_MAP.values()})
 
 # ======================================================================
 # LOAD OPENAI KEY
@@ -86,11 +81,10 @@ except NameError:
     ENV_PATH = Path(os.getcwd()) / "OpenAIKey.env"
 
 load_dotenv(dotenv_path=ENV_PATH, override=True)
-
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
 if not OPENAI_API_KEY:
-    st.error("❌ Missing OPENAI_API_KEY in secrets or environment")
+    st.error("❌ Missing OPENAI_API_KEY.")
     st.stop()
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -99,17 +93,16 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # GOOGLE CREDS
 # ======================================================================
 def get_google_creds() -> Credentials:
+    """Load Google service account credentials from Streamlit secrets."""
     if "GOOGLE_SERVICE_ACCOUNT_JSON" not in st.secrets:
-        st.error("❌ GOOGLE_SERVICE_ACCOUNT_JSON missing in secrets.")
+        st.error("❌ GOOGLE_SERVICE_ACCOUNT_JSON missing.")
         st.stop()
-
     try:
         info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
         return Credentials.from_service_account_info(info, scopes=SCOPES)
     except Exception as e:
         st.error(f"❌ Invalid Google credentials: {e}")
         st.stop()
-
 
 creds = get_google_creds()
 gc = gspread.authorize(creds)
@@ -118,68 +111,62 @@ drive_service = build("drive", "v3", credentials=creds)
 # ======================================================================
 # NORMALIZATION HELPERS
 # ======================================================================
-def normalize_month_string(text: Any) -> Optional[str]:
-    if not isinstance(text, str):
+def normalize_month_string(m: Any) -> Optional[str]:
+    """Return canonical 'September 2025' format."""
+    if not isinstance(m, str):
         return None
-    raw = text.strip().lower()
-    if not raw:
-        return None
-    raw = re.sub(r"[-_/.,]+", " ", raw)
-    parts = raw.split()
+    t = re.sub(r"[-_/.,]+", " ", m.strip().lower())
+    parts = t.split()
 
-    if len(parts) == 2:
-        m, y = parts
-        if m in MONTH_MAP and re.match(r"^\d{4}$", y):
-            return f"{MONTH_MAP[m]} {y}"
+    # "sep 2025"
+    if len(parts) == 2 and parts[0] in MONTH_MAP and parts[1].isdigit():
+        return f"{MONTH_MAP[parts[0]]} {parts[1]}"
 
-    m = re.match(r"^(\d{1,2})\s+(\d{4})$", raw)
-    if m:
-        mm = int(m.group(1))
-        y = m.group(2)
+    # "09 2025"
+    if re.match(r"^\d{1,2} \d{4}$", t):
+        mm, yyyy = t.split()
+        mm = int(mm)
         if 1 <= mm <= 12:
-            return f"{MONTH_NAMES[mm-1]} {y}"
+            return f"{MONTH_NAMES[mm - 1]} {yyyy}"
 
-    m2 = re.match(
-        r"^(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})$",
-        raw,
-    )
-    if m2:
-        return f"{m2.group(1).capitalize()} {m2.group(2)}"
+    # "september 2025"
+    if len(parts) == 2 and parts[0].capitalize() in MONTH_NAMES:
+        if re.match(r"^\d{4}$", parts[1]):
+            return f"{parts[0].capitalize()} {parts[1]}"
 
     return None
 
 
-def normalize_status(raw: Any) -> str:
-    if not isinstance(raw, str):
+def normalize_status(s: Any) -> str:
+    if not isinstance(s, str):
         return ""
-    t = raw.strip().lower()
+    t = s.strip().lower()
     if not t:
         return ""
-    for canonical, keywords in STATUS_KEYWORDS.items():
-        if any(kw in t for kw in keywords):
+    for canonical, words in STATUS_KEYWORDS.items():
+        if any(w in t for w in words):
             return canonical
-    return raw.strip().title()
+    return s.strip().title()
 
 
-def detect_status_from_question(question: str) -> Optional[str]:
-    text = question.lower()
-    hits = set()
-    for canonical, keywords in STATUS_KEYWORDS.items():
-        if any(re.search(rf"\b{re.escape(kw)}\b", text) for kw in keywords):
-            hits.add(canonical)
-    if len(hits) == 0:
+def detect_status_from_question(q: str) -> Optional[str]:
+    found = set()
+    text = q.lower()
+    for canonical, words in STATUS_KEYWORDS.items():
+        if any(re.search(rf"\b{re.escape(w)}\b", text) for w in words):
+            found.add(canonical)
+    if len(found) == 0:
         return None
-    if len(hits) > 1:
+    if len(found) > 1:
         return "MULTI"
-    return list(hits)[0]
-
+    return list(found)[0]
 
 # ======================================================================
-# REFRESH (CACHE CLEAR)
+# REFRESH BUTTON
 # ======================================================================
 def clear_sheet_cache_and_rerun():
     load_sheets.clear()  # type: ignore
-    st.success("🔄 Sheets refreshed!")
+    st.success("🔄 Sheets refreshed.")
     st.experimental_rerun()
 
 # ======================================================================
@@ -191,69 +178,64 @@ def load_sheets():
 
     # STOCK
     ws = sh.worksheet(WS_STOCK)
-    df1 = pd.DataFrame(ws.get_all_values())
-    df1.columns = df1.iloc[0].str.strip()
-    df1 = df1[1:].reset_index(drop=True)
-    df1.replace(r"^\s*$", np.nan, regex=True, inplace=True)
+    stock_df = pd.DataFrame(ws.get_all_values())
+    stock_df.columns = stock_df.iloc[0].str.strip()
+    stock_df = stock_df[1:].reset_index(drop=True)
+    stock_df.replace(r"^\s*$", np.nan, regex=True, inplace=True)
 
-    if "Product Code" in df1:
-        df1["Product Code"] = pd.to_numeric(df1["Product Code"], errors="coerce")
+    if "Product Code" in stock_df:
+        stock_df["Product Code"] = pd.to_numeric(stock_df["Product Code"], errors="coerce")
 
-    if "PACKS" in df1:
-        df1["PACKS"] = pd.to_numeric(df1["PACKS"], errors="coerce").fillna(0)
+    if "PACKS" in stock_df:
+        stock_df["PACKS"] = pd.to_numeric(stock_df["PACKS"], errors="coerce").fillna(0)
 
-    if "Month" in df1:
-        df1["Month"] = df1["Month"].astype(str).str.strip()
+    if "Month" in stock_df:
+        stock_df["Month"] = stock_df["Month"].astype(str).str.strip()
 
-    if "Status" in df1:
-        df1["Status"] = df1["Status"].apply(normalize_status)
+    if "Status" in stock_df:
+        stock_df["Status"] = stock_df["Status"].apply(normalize_status)
 
     # SUMMARY
     ws2 = sh.worksheet(WS_SUMMARY)
-    df2 = pd.DataFrame(ws2.get_all_values())
-    df2.columns = df2.iloc[0].str.strip()
-    df2 = df2[1:].reset_index(drop=True)
-    df2.replace(r"^\s*$", np.nan, regex=True, inplace=True)
+    summary_df = pd.DataFrame(ws2.get_all_values())
+    summary_df.columns = summary_df.iloc[0].str.strip()
+    summary_df = summary_df[1:].reset_index(drop=True)
+    summary_df.replace(r"^\s*$", np.nan, regex=True, inplace=True)
 
     for col in SUMMARY_NUMERIC_COLS:
-        if col in df2:
-            df2[col] = pd.to_numeric(df2[col], errors="coerce").fillna(0)
+        if col in summary_df:
+            summary_df[col] = pd.to_numeric(summary_df[col], errors="coerce").fillna(0)
 
-    if "ITEM #" in df2:
-        df2["ITEM #"] = pd.to_numeric(df2["ITEM #"], errors="coerce")
+    if "ITEM #" in summary_df:
+        summary_df["ITEM #"] = pd.to_numeric(summary_df["ITEM #"], errors="coerce")
 
-    df2["AVAILABLE_num"] = pd.to_numeric(df2.get("AVAILABLE", np.nan), errors="coerce").fillna(0)
+    summary_df["AVAILABLE_num"] = (
+        pd.to_numeric(summary_df.get("AVAILABLE", np.nan), errors="coerce").fillna(0)
+    )
 
-    return df1, df2
-
+    return stock_df, summary_df
 
 stock_df, summary_df = load_sheets()
 
 # ======================================================================
-# BUILD FILTERS + APPLY PLAN
+# PLANNER + EXECUTION
 # ======================================================================
 def build_condition(df, col, op, val):
     s = df[col]
-    if op == "==":
-        return s == val
-    if op == "!=":
-        return s != val
-    if op == "<":
-        return s < val
-    if op == "<=":
-        return s <= val
-    if op == ">":
-        return s > val
-    if op == ">=":
-        return s >= val
+    if op == "==": return s == val
+    if op == "!=": return s != val
+    if op == "<": return s < val
+    if op == "<=": return s <= val
+    if op == ">": return s > val
+    if op == ">=": return s >= val
     if op == "contains":
         return s.astype(str).str.contains(str(val), case=False, na=False)
-    raise ValueError(f"Unsupported operator: {op}")
+    raise ValueError(op)
 
 
 def apply_plan(plan, df, df_name):
     if not isinstance(plan, dict):
-        return None, "❌ Invalid plan format."
+        return None, "❌ Invalid plan structure."
 
     filters = plan.get("filters", [])
     metric = plan.get("metric")
@@ -263,78 +245,60 @@ def apply_plan(plan, df, df_name):
     mask = pd.Series(True, index=df.index)
 
     for f in filters:
-        col, op, val = f["column"], f.get("op", "=="), f.get("value")
+        col, op, val = f["column"], f["op"], f.get("value")
 
-        if col == "Month" and isinstance(val, str):
+        if col == "Month":
             val = normalize_month_string(val) or val
-
         if col == "Status":
             val = normalize_status(val)
 
-        cond = build_condition(df, col, op, val)
-        mask &= cond
+        mask &= build_condition(df, col, op, val)
 
-    filtered = df[mask].copy()
-
-    if filtered.empty:
-        return filtered, "⚠ No matching rows found."
+    out = df[mask]
+    if out.empty:
+        return out, "⚠ No matching rows found."
 
     if metric and metric in df.columns:
-        s = filtered[metric]
-        if agg == "sum":
-            return s.sum(), None
-        if agg == "max":
-            return s.max(), None
-        if agg == "min":
-            return s.min(), None
-        if agg == "list":
-            return s.tolist(), None
+        series = out[metric]
+        if agg == "sum": return series.sum(), None
+        if agg == "max": return series.max(), None
+        if agg == "min": return series.min(), None
+        if agg == "list": return series.tolist(), None
 
     if isinstance(limit, int) and limit > 0:
-        return filtered.head(min(limit, 500)), None
+        return out.head(min(limit, 500)), None
 
-    return filtered, None
+    return out, None
 
 
-# ======================================================================
-# GPT PLANNER
-# ======================================================================
-def build_planner_prompt(question, df_name, df, status):
+def build_planner_prompt(question, df_name, df, detected_status):
     cols = list(df.columns)
 
     if df_name == "stock":
         id_col = "Product Code"
         metric_col = "PACKS"
-        month_col = "Month"
-        status_col = "Status"
     else:
         id_col = "ITEM #"
         metric_col = "AVAILABLE_num"
-        month_col = None
-        status_col = None
 
-    prompt = f"""
-You are a strict JSON query planner for ONE DataFrame.
+    return f"""
+You are a strict JSON query planner for ONE Pandas DataFrame.
 
-COLUMNS: {cols}
+COLUMNS = {cols}
 
 RULES:
-- ONLY produce valid JSON.
-- Never invent column names.
-- For product/item code, filter on "{id_col}".
-- For 'how many' or totals, use metric "{metric_col}" unless user specifies another numeric column.
-- If a month is mentioned and 'Month' exists, include it.
-- For stock_df, if a status is detected, include it as a filter.
+- Only produce JSON.
+- Never invent columns.
+- Filter product/item code using '{id_col}'.
+- For counts/totals, use metric '{metric_col}' unless user names another numeric column.
+- If a month appears and 'Month' exists, include it.
+- If a status is detected for stock_df, include it: {detected_status}
 
-Detected Status: {status}
-
-User Question:
+USER QUESTION:
 {question}
 
-Return ONLY a JSON object, no explanations.
+Return ONLY a JSON object.
 """
-
-    return prompt
 
 
 @st.cache_data(show_spinner=False)
@@ -355,78 +319,65 @@ def get_plan(question, df_name, detected_status):
         return None
 
 
-# ======================================================================
-# ANSWER QUESTION
-# ======================================================================
 def answer_question(question, df_name):
     df = stock_df if df_name == "stock" else summary_df
 
-    detected_status = None
+    # Stock sheet requires explicit status
     if df_name == "stock":
-        detected_status = detect_status_from_question(question)
-
-        if detected_status is None:
+        status = detect_status_from_question(question)
+        if status is None:
             return (
-                "⚠ I couldn't detect a status. Please include one: "
-                "**Invoiced**, **Shipped**, **Landed**, **Ordered**.",
+                "⚠ Missing status. Include ONE status: Invoiced, Shipped, Landed, Ordered.",
                 None,
                 None,
             )
+        if status == "MULTI":
+            return "⚠ Multiple statuses detected. Use only ONE.", None, None
+    else:
+        status = None
 
-        if detected_status == "MULTI":
-            return (
-                "⚠ Multiple statuses detected. Please specify only ONE.",
-                None,
-                None,
-            )
-
-    plan = get_plan(question, df_name, detected_status)
+    plan = get_plan(question, df_name, status)
     if plan is None:
-        return "❌ Unable to create query plan.", None, None
+        return "❌ Failed to generate query plan.", None, None
 
     result, err = apply_plan(plan, df, df_name)
     if err:
         return err, plan, result
 
-    # Build explanation
-    preview = (
-        result.head(15).to_string() if isinstance(result, pd.DataFrame)
-        else str(result)
-    )
+    preview = result.head(15).to_string() if isinstance(result, pd.DataFrame) else str(result)
 
     explain_prompt = f"""
-Explain this result to a non-technical user:
+Explain the following result to a non-technical user:
 
-User Question:
+USER QUESTION:
 {question}
 
-Plan:
+PLAN:
 {json.dumps(plan)}
 
-Result Preview:
+RESULT PREVIEW:
 {preview}
 """
 
-    response = client.chat.completions.create(
+    resp = client.chat.completions.create(
         model=MODEL,
         messages=[{"role": "user", "content": explain_prompt}],
         temperature=0.2,
     )
 
-    return response.choices[0].message.content.strip(), plan, result
+    return resp.choices[0].message.content.strip(), plan, result
 
 
 # ======================================================================
-# UI (FIXED — Modern Chat Interface)
+# UI (CLOUD-SAFE MODERN CHAT INTERFACE)
 # ======================================================================
 
-# Ensure chat history exists (CORRECT LOCATION)
+# Init session state safely
 if "history" not in st.session_state:
     st.session_state.history = []
 
 if "preset_question" not in st.session_state:
     st.session_state.preset_question = ""
-
 
 # ================================
 # SIDEBAR
@@ -436,13 +387,13 @@ with st.sidebar:
 
     sheet_choice = st.radio(
         "Select Sheet:",
-        ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
+        ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"],
     )
 
     df_name = "stock" if sheet_choice.startswith("Stock") else "summary"
     df_selected = stock_df if df_name == "stock" else summary_df
 
-    if st.button("🔄 Refresh Sheets Now"):
+    if st.button("🔄 Refresh Sheets"):
         clear_sheet_cache_and_rerun()
 
     debug_mode = st.checkbox("Show Debug Info")
@@ -452,81 +403,74 @@ with st.sidebar:
         with st.expander("📄 DataFrame Preview"):
             st.dataframe(df_selected, use_container_width=True)
 
-
 # ================================
 # HEADER
 # ================================
-st.markdown("### 💬 Inventory Chatbot (Google Sheets-Powered)")
+st.markdown("### 💬 Inventory Chatbot")
 
 if df_name == "stock":
     st.info(
-        "Queries on **stock_df** must include exactly ONE status:\n"
+        "On **stock_df**, your question must include exactly ONE status:\n"
         "**Invoiced**, **Shipped**, **Landed**, or **Ordered**."
     )
 
-
 # ================================
-# EXAMPLE QUESTIONS
+# EXAMPLE QUERIES
 # ================================
-with st.expander("📌 Example questions"):
+with st.expander("📌 Example Questions"):
     col1, col2 = st.columns(2)
+
     with col1:
-        if st.button("Ordered packs for 20373 (Nov 2025)"):
-            st.session_state.preset_question = (
-                "How many Ordered packs for 20373 for November 2025?"
-            )
-        if st.button("Landed packs for 20588 (Sep 2025)"):
-            st.session_state.preset_question = (
-                "How many Landed packs for 20588 for September 2025?"
-            )
+        if st.button("Ordered packs 20373 (Nov 2025)"):
+            st.session_state.preset_question = "How many Ordered packs for 20373 for November 2025?"
+
+        if st.button("Landed packs 20588 (Sep 2025)"):
+            st.session_state.preset_question = "How many Landed packs for 20588 for September 2025?"
 
     with col2:
-        if st.button("Invoiced packs for 20373 (Nov 2025)"):
-            st.session_state.preset_question = (
-                "How many Invoiced packs for 20373 for November 2025?"
-            )
-        if st.button("Available for item 20246"):
-            st.session_state.preset_question = (
-                "How many AVAILABLE for ITEM # 20246?"
-            )
+        if st.button("Invoiced packs 20373 (Nov 2025)"):
+            st.session_state.preset_question = "How many Invoiced packs for 20373 for November 2025?"
 
+        if st.button("AVAILABLE for item 20246"):
+            st.session_state.preset_question = "How many AVAILABLE for ITEM # 20246?"
 
 # ================================
-# DISPLAY CHAT HISTORY
+# CHAT HISTORY DISPLAY
 # ================================
 for role, msg in st.session_state.history:
     st.chat_message(role).write(msg)
 
-
 # ================================
-# INPUT FIELD
+# INPUT (Cloud-safe)
 # ================================
 question = st.chat_input(
-    "Ask your question...",
+    label="Ask your question...",
     placeholder=(
         "e.g., How many Landed packs for 20373 for September 2025?"
-        if df_name == "stock" else
-        "e.g., How many AVAILABLE for ITEM # 20373?"
+        if df_name == "stock"
+        else "e.g., How many AVAILABLE for ITEM # 20373?"
     ),
 )
 
-if not question:
-    # Use preset if user clicked an example button
+# If question not typed but preset button clicked
+if not question and st.session_state.preset_question:
     question = st.session_state.preset_question
     st.session_state.preset_question = ""
 
-
 # ================================
-# PROCESS QUESTION
+# PROCESS INPUT
 # ================================
 if question:
+    # Save user message
     st.session_state.history.append(("user", question))
 
     explanation, plan, result = answer_question(question, df_name)
 
+    # Show assistant response
     st.session_state.history.append(("assistant", explanation))
     st.chat_message("assistant").write(explanation)
 
+    # Debug info
     if debug_mode and plan is not None:
         with st.expander("🛠 Debug Info"):
             st.json(plan)
