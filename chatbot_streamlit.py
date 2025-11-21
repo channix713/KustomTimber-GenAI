@@ -311,4 +311,299 @@ def build_planner_prompt(question, df_name, df, detected_status):
 
     if df_name == "summary":
         examples.append({
-            "user_question": "How many AVAILABLE for ITEM # 2037_
+            "user_question": "How many AVAILABLE for ITEM # 20373?",
+            "plan": {
+                "filters": [{"column": "ITEM #", "op": "==", "value": 20373}],
+                "metric": "AVAILABLE_num",
+                "aggregation": "sum",
+                "limit": 0,
+            },
+        })
+
+    if df_name == "stock":
+        examples.append({
+            "user_question": "How many PACKS for product code 20373 in November 2025 with status invoiced?",
+            "plan": {
+                "filters": [
+                    {"column": "Product Code", "op": "==", "value": 20373},
+                    {"column": "Month", "op": "==", "value": "November 2025"},
+                    {"column": "Status", "op": "==", "value": "Invoiced"},
+                ],
+                "metric": "PACKS",
+                "aggregation": "sum",
+                "limit": 0,
+            },
+        })
+
+    prompt = f"""
+You are a strict JSON query planner.
+
+DATAFRAME NAME: {df_name}_df
+COLUMNS: {cols}
+
+Return ONLY a JSON object:
+{{
+  "filters": [...],
+  "metric": "<column or null>",
+  "aggregation": "sum" | "max" | "min" | "rows" | "list",
+  "limit": <int or 0>
+}}
+"""
+
+    if df_name == "stock" and detected_status in CANONICAL_STATUSES:
+        prompt += f"""
+Detected status: {detected_status}.
+You MUST include filter: {{"column":"Status","op":"==","value":"{detected_status}"}}.
+"""
+
+    for ex in examples:
+        prompt += f"""
+USER_QUESTION_EXAMPLE:
+{ex['user_question']}
+
+JSON_PLAN_EXAMPLE:
+{json.dumps(ex['plan'])}
+"""
+
+    prompt += f"\nUser question:\n{question}\nReturn only valid JSON."
+    return prompt
+
+
+@st.cache_data(show_spinner=False)
+def get_plan(question, df_name, detected_status):
+    df = stock_df if df_name == "stock" else summary_df
+    prompt = build_planner_prompt(question, df_name, df, detected_status)
+
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+
+    try:
+        plan = json.loads(resp.choices[0].message.content)
+    except:
+        return None
+
+    if not isinstance(plan, dict):
+        return None
+
+    plan.setdefault("filters", [])
+    plan.setdefault("aggregation", "rows")
+    if not isinstance(plan.get("limit"), int):
+        plan["limit"] = 0
+    return plan
+
+
+# ======================================================================
+# MAIN ANSWER
+# ======================================================================
+def answer_question(question: str, df_name: str):
+    df = stock_df if df_name == "stock" else summary_df
+    detected_status = None
+
+    if df_name == "stock":
+        detected_status = detect_status_from_question(question)
+
+        if detected_status is None:
+            return (
+                "⚠ Please specify exactly ONE status: Invoiced, Shipped, Landed, Ordered.",
+                None,
+                None,
+            )
+
+        if detected_status == "MULTI":
+            return (
+                "⚠ Your question includes more than one status. Please choose only ONE.",
+                None,
+                None,
+            )
+
+    plan = get_plan(question, df_name, detected_status)
+    if plan is None:
+        return "❌ I could not build a valid JSON plan.", None, None
+
+    result, err = apply_plan(plan, df, df_name)
+    if err:
+        return err, plan, result
+
+    if isinstance(result, pd.DataFrame):
+        preview = result.head(20).to_string()
+    else:
+        preview = str(result)
+
+    explain_prompt = f"""
+Explain this result to a non-technical user:
+
+User question:
+{question}
+
+Plan:
+{json.dumps(plan)}
+
+Raw result:
+{preview}
+"""
+
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "user", "content": explain_prompt}],
+        temperature=0.2,
+    )
+
+    explanation = resp.choices[0].message.content.strip()
+    return explanation, plan, result
+
+
+# ======================================================================
+# UI — CHAT STYLE
+# ======================================================================
+
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
+
+# Title
+st.markdown(
+    """
+    <h1 style='text-align:center; margin-bottom: 10px;'>📦 Kustom Timber Stock Inventory Chatbot</h1>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---------------- SIDEBAR ----------------
+with st.sidebar:
+    st.header("⚙️ Settings")
+
+    st.subheader("Choose Sheet")
+    sheet_choice = st.selectbox(
+        "Sheet:",
+        ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
+    )
+
+    df_name = "stock" if sheet_choice.startswith("Stock") else "summary"
+    df_selected = stock_df if df_name == "stock" else summary_df
+
+    if st.checkbox("Show DataFrame Preview"):
+        st.dataframe(df_selected, use_container_width=True)
+
+    st.subheader("Quick Questions")
+    if st.button("Ordered 20373 - Nov 2025"):
+        st.session_state["preset_question"] = (
+            "how many Ordered packs for 20373 for November 2025?"
+        )
+    if st.button("Invoiced 20373 - Nov 2025"):
+        st.session_state["preset_question"] = (
+            "how many Invoiced packs for 20373 for November 2025?"
+        )
+    if st.button("Landed 20588 - Sep 2025"):
+        st.session_state["preset_question"] = (
+            "how many status (Landed) packs for 20588 for September 2025?"
+        )
+    if st.button("Available for 20246"):
+        st.session_state["preset_question"] = "how many available for 20246?"
+
+    show_debug = st.checkbox("🛠 Show debug plan & raw result")
+
+    st.markdown("---")
+    if st.button("🧹 Clear Chat History"):
+        st.session_state["chat_history"] = []
+        st.rerun()
+
+
+# ---------------- CHAT WINDOW ----------------
+chat_container = st.container()
+
+scroll_css = """
+<style>
+.chat-box {
+    max-height: 420px;
+    overflow-y: auto;
+    padding-right: 12px;
+    border: 1px solid #555;
+    border-radius: 10px;
+    background: #2B2B2B;
+}
+
+.chat-bubble-user {
+    background:#3A3A3A;
+    padding:12px;
+    border-radius:10px;
+    margin-bottom:8px;
+    width:fit-content;
+    max-width:80%;
+    color:#FFF;
+}
+
+.chat-bubble-bot {
+    background:#1F1F1F;
+    padding:12px;
+    border-radius:10px;
+    margin-bottom:8px;
+    width:fit-content;
+    max-width:80%;
+    color:#FFF;
+}
+</style>
+"""
+st.markdown(scroll_css, unsafe_allow_html=True)
+
+with chat_container:
+    st.markdown("<div class='chat-box'>", unsafe_allow_html=True)
+    for msg in st.session_state["chat_history"]:
+        if msg["role"] == "user":
+            st.markdown(
+                f"<div class='chat-bubble-user'><strong>You:</strong><br>{msg['content']}</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"<div class='chat-bubble-bot'><strong>Bot:</strong><br>{msg['content']}</div>",
+                unsafe_allow_html=True,
+            )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ---------------- INPUT ----------------
+default_q = st.session_state.get("preset_question", "")
+question = st.text_input(
+    "Ask a question:",
+    value=default_q,
+    placeholder="e.g., how many landed packs for 20588 for September 2025?"
+)
+
+if st.button("Send"):
+    if not question.strip():
+        st.warning("Enter a question first.")
+    else:
+        st.session_state["chat_history"].append({"role": "user", "content": question})
+
+        explanation, plan, result = answer_question(question, df_name)
+
+        st.session_state["chat_history"].append(
+            {"role": "assistant", "content": explanation}
+        )
+
+        st.session_state["preset_question"] = ""
+
+        st.rerun()
+
+
+# ---------------- DEBUG ----------------
+if show_debug and "last_question" in st.session_state:
+    st.markdown("---")
+    st.markdown("### 🛠 Debug Info")
+
+    explanation, plan, result = answer_question(
+        st.session_state.get("last_question", ""), df_name
+    )
+
+    if isinstance(plan, dict):
+        st.markdown("### 🧩 JSON Plan")
+        st.json(plan)
+
+    st.markdown("### 📄 Raw Result")
+    if isinstance(result, (pd.DataFrame, pd.Series)):
+        st.dataframe(result)
+    else:
+        st.write(result)
