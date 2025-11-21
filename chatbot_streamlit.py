@@ -499,4 +499,210 @@ If you are unsure, use an empty filters list: "filters": [].
 """
 
     if status_col:
-        prompt += f"\nKnown example statuses (canonical): {status_example_
+        prompt += f"\nKnown example statuses (canonical): {status_examples}\n"
+
+    # Inject detected status (from Python side) to enforce it
+    if df_name == "stock" and status_col and detected_status in CANONICAL_STATUSES:
+        prompt += f"""
+The user's question contains the status keyword, interpreted as:
+DETECTED_STATUS = "{detected_status}"
+
+You MUST include a filter:
+  {{"column": "Status", "op": "==", "value": "{detected_status}"}}
+in the filters list of the JSON plan.
+"""
+
+    prompt += "\nEXAMPLES:\n"
+    for ex in examples:
+        prompt += "\nUSER_QUESTION_EXAMPLE:\n"
+        prompt += ex["user_question"] + "\n"
+        prompt += "JSON_PLAN_EXAMPLE:\n"
+        prompt += json.dumps(ex["plan"]) + "\n"
+
+    prompt += f"""
+NOW THE REAL USER QUESTION:
+{question}
+
+Return ONLY valid JSON according to the schema. No explanation, no markdown.
+"""
+    return prompt
+
+
+@st.cache_data(show_spinner=False)
+def get_plan(
+    question: str, df_name: str, detected_status: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """
+    Generate a JSON plan using GPT, cached by (question, df_name, detected_status).
+    """
+    df = stock_df if df_name == "stock" else summary_df
+    prompt = build_planner_prompt(question, df_name, df, detected_status)
+
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+
+    raw = resp.choices[0].message.content.strip()
+
+    try:
+        plan: Dict[str, Any] = json.loads(raw)
+    except Exception:
+        return None
+
+    if not isinstance(plan, dict):
+        return None
+
+    # Ensure required keys exist and are well-typed
+    if "filters" not in plan or not isinstance(plan["filters"], list):
+        plan["filters"] = []
+
+    if "aggregation" not in plan or not isinstance(plan["aggregation"], str):
+        plan["aggregation"] = "rows"
+
+    # Normalize limit
+    if "limit" in plan and not isinstance(plan["limit"], int):
+        plan["limit"] = 0
+
+    return plan
+
+# ======================================================================
+# MAIN ANSWER FUNCTION
+# ======================================================================
+def answer_question(
+    question: str, df_name: str
+) -> Tuple[str, Optional[Dict[str, Any]], Any]:
+    df = stock_df if df_name == "stock" else summary_df
+    detected_status: Optional[str] = None
+
+    # For stock, enforce that status is explicitly present (Option 3)
+    if df_name == "stock":
+        detected_status = detect_status_from_question(question)
+
+        if detected_status is None:
+            msg = (
+                "⚠ I couldn't detect a status in your question.\n\n"
+                "Please rephrase your question including exactly ONE of these statuses:\n"
+                "- Invoiced\n- Shipped\n- Landed\n- Ordered\n\n"
+                "Example: `How many Landed packs for 20588 for September 2025?`"
+            )
+            return msg, None, None
+
+        if detected_status == "MULTI":
+            msg = (
+                "⚠ Your question seems to mention more than one status.\n\n"
+                "Please clarify using only ONE of:\n"
+                "- Invoiced\n- Shipped\n- Landed\n- Ordered"
+            )
+            return msg, None, None
+
+    # Build plan with detected_status (or None for summary_df)
+    plan = get_plan(question, df_name, detected_status)
+    if plan is None:
+        return "❌ I couldn't create a valid plan for that question.", None, None
+
+    result, err = apply_plan(plan, df, df_name)
+    if err:
+        return err, plan, result
+
+    # Prepare a small text preview for the explainer prompt
+    if isinstance(result, pd.DataFrame):
+        result_preview = result.head(20).to_string()
+    elif isinstance(result, pd.Series):
+        result_preview = result.to_string()
+    else:
+        result_preview = str(result)
+
+    explain_prompt = f"""
+You are an assistant explaining data results in plain language.
+
+USER QUESTION:
+{question}
+
+DATAFRAME: {df_name}_df
+
+PLAN (JSON):
+{json.dumps(plan)}
+
+RAW RESULT (truncated preview):
+{result_preview}
+
+Explain the answer clearly and concisely for a non-technical user.
+"""
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "user", "content": explain_prompt}],
+        temperature=0.2,
+    )
+
+    explanation = resp.choices[0].message.content.strip()
+    return explanation, plan, result
+
+# ======================================================================
+# UI
+# ======================================================================
+st.subheader(
+    "Choose Sheet to Query:\n"
+    "Select stock_df to ask questions about IMR and summary_df for stock availability"
+)
+
+sheet_choice = st.selectbox(
+    "Sheet:", ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
+)
+
+df_name = "stock" if sheet_choice.startswith("Stock") else "summary"
+df_selected = stock_df if df_name == "stock" else summary_df
+
+if st.checkbox("Show DataFrame Preview"):
+    st.dataframe(df_selected, use_container_width=True)
+
+st.markdown("### Quick questions")
+
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    if st.button("how many Ordered packs for 20373 for November 2025?"):
+        st.session_state["preset_question"] = (
+            "how many Ordered packs for 20373 for November 2025?"
+        )
+with c2:
+    if st.button("how many Invoiced packs for 20373 for November 2025?"):
+        st.session_state["preset_question"] = (
+            "how many Invoiced packs for 20373 for November 2025?"
+        )
+with c3:
+    if st.button("how many status (Landed) packs for 20588 for September 2025?"):
+        st.session_state["preset_question"] = (
+            "how many status (Landed) packs for 20588 for September 2025?"
+        )
+with c4:
+    if st.button("how many available for 20246?"):
+        st.session_state["preset_question"] = "how many available for 20246?"
+
+default_q = st.session_state.get("preset_question", "")
+question = st.text_input("Ask your question:", value=default_q)
+
+show_debug = st.checkbox("🛠 Show debug plan & raw result")
+
+if st.button("Ask"):
+    if not question.strip():
+        st.warning("Enter a question first.")
+    else:
+        # Remember last question for convenience
+        st.session_state["last_question"] = question
+
+        explanation, plan, result = answer_question(question, df_name)
+
+        st.markdown("### Chatbot Answer")
+        st.write(explanation)
+
+        if show_debug:
+            if isinstance(plan, dict):
+                st.markdown("### 🧩 JSON Plan")
+                st.json(plan)
+            st.markdown("### 📄 Raw Result")
+            if isinstance(result, (pd.DataFrame, pd.Series)):
+                st.dataframe(result)
+            else:
+                st.write(result)
