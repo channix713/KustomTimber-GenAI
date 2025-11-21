@@ -5,12 +5,13 @@
 #  - Automatic Status detection (Invoiced / Shipped / Landed / Ordered)
 #  - Ask user to specify Status if missing (Option 3)
 #  - Refactored utils, safer planner, better cache & refresh
-#  - Branded Kustom Timber UI (Black theme)
+#  - Branded Kustom Timber UI (Black theme, Base64 logo)
 # ======================================================================
 
 import os
 import re
 import json
+import base64
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,6 +29,22 @@ from openai import OpenAI
 # ======================================================================
 st.set_page_config(page_title="Inventory Chatbot", layout="wide")
 
+# ---------- LOAD LOGO AS BASE64 ----------
+def load_logo_base64() -> Optional[str]:
+    """
+    Load the Kustom Timber logo from disk and return base64 string.
+    Option B: embed as base64 in HTML <img>.
+    """
+    # Adjust path if you relocate the file in your repo
+    logo_path = Path("/mnt/data/kustom timber logo.jpg")
+    try:
+        with open(logo_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+    except Exception:
+        return None
+
+LOGO_BASE64 = load_logo_base64()
+
 # ---------- GLOBAL THEME / CSS ----------
 CUSTOM_CSS = """
 <style>
@@ -35,7 +52,7 @@ CUSTOM_CSS = """
 :root {
     --kt-dark: #000000;     /* full black */
     --kt-light: #FFFFFF;
-    --kt-accent: #C8A570;
+    --kt-accent: #C8A570;   /* warm gold */
     --kt-grey: #2E2E2E;
 }
 
@@ -74,21 +91,21 @@ header, footer {
 
 /* Chat bubbles */
 .kt-user-msg {
-    background-color: var(--kt-accent);
+    background-color: var(--kt-accent) !important;
     padding: 14px 18px;
     border-radius: 12px;
     max-width: 70%;
-    color: black !important;
+    color: #000000 !important;
     margin-bottom: 10px;
 }
 
 .kt-assistant-msg {
-    background-color: #1A1A1A;
+    background-color: var(--kt-accent) !important;
     padding: 14px 18px;
     border-radius: 12px;
     max-width: 70%;
     border: 1px solid #333;
-    color: white !important;
+    color: #000000 !important;
     margin-bottom: 10px;
 }
 
@@ -100,8 +117,23 @@ section[data-testid="stSidebar"] * {
     color: white !important;
 }
 
-/* General text elements */
-label, .stMarkdown, .stTextInput {
+/* Main text (do NOT override all divs) */
+.stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2,
+.stMarkdown h3, .stMarkdown h4, label, span {
+    color: white !important;
+}
+
+/* Ensure inputs have visible text/placeholder */
+input, textarea {
+    color: white !important;
+    background-color: #111111 !important;
+}
+::placeholder {
+    color: #888888 !important;
+}
+
+/* Buttons */
+button[kind="secondary"] {
     color: white !important;
 }
 
@@ -110,10 +142,15 @@ label, .stMarkdown, .stTextInput {
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ---------- LOGO HEADER ----------
+if LOGO_BASE64:
+    logo_html = f"<img src='data:image/jpeg;base64,{LOGO_BASE64}' width='120'>"
+else:
+    logo_html = "<div style='color:white; font-weight:600;'>Kustom Timber</div>"
+
 st.markdown(
-    """
+    f"""
     <div class='kt-header'>
-        <img src='/mnt/data/kustom timber logo.jpg' width='120'>
+        {logo_html}
         <div class='kt-header-title'>
             Kustom Timber Stock & Inventory AI Assistant
         </div>
