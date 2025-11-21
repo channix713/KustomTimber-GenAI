@@ -652,7 +652,7 @@ Explain the answer clearly and concisely for a non-technical user.
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    st.subheader("Choose Sheet to Query")
+    st.subheader("Choose Sheet to Query: \n Select stock_df for IMR questions and Summary_df for Stock Availability")
     sheet_choice = st.selectbox(
         "Sheet:", ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
     )
