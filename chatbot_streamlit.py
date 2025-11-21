@@ -33,7 +33,7 @@ CUSTOM_CSS = """
 <style>
 
 body {
-    background-color: #F5F5F5;
+    background-color: #000000;
 }
 
 :root {
