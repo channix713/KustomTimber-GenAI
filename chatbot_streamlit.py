@@ -32,34 +32,38 @@ st.set_page_config(page_title="Inventory Chatbot", layout="wide")
 CUSTOM_CSS = """
 <style>
 
-body {
-    background-color: #000000;
-}
-
 :root {
-    --kt-dark: #2E2E2E;
-    --kt-light: #000000;
+    --kt-dark: #000000;     /* full black */
+    --kt-light: #FFFFFF;
     --kt-accent: #C8A570;
-    --kt-grey: #E0E0E0;
+    --kt-grey: #2E2E2E;
 }
 
-header, .stApp {
-    background-color: #F5F5F5 !important;
+/* Make entire app background black */
+html, body, [data-testid="stAppViewContainer"], .stApp {
+    background-color: #000000 !important;
 }
 
+header, footer {
+    background-color: #000000 !important;
+}
+
+/* Remove white block container background */
 .block-container {
+    background-color: #000000 !important;
     padding-top: 1rem !important;
 }
 
-/* Top Header Container */
+/* Header panel */
 .kt-header {
-    background-color: var(--kt-dark);
+    background-color: #000000 !important;
     padding: 24px 0 30px 0;
     border-radius: 8px;
     text-align: center;
     margin-bottom: 30px;
 }
 
+/* Title */
 .kt-header-title {
     color: var(--kt-light);
     font-size: 28px;
@@ -79,20 +83,25 @@ header, .stApp {
 }
 
 .kt-assistant-msg {
-    background-color: var(--kt-light);
+    background-color: #1A1A1A;
     padding: 14px 18px;
     border-radius: 12px;
     max-width: 70%;
-    border: 1px solid #DDD;
+    border: 1px solid #333;
+    color: white;
     margin-bottom: 10px;
 }
 
-/* Sidebar styling */
+/* Sidebar */
 section[data-testid="stSidebar"] {
-    background-color: var(--kt-dark) !important;
+    background-color: #000000 !important;
 }
 section[data-testid="stSidebar"] * {
-    color: var(--kt-light) !important;
+    color: white !important;
+}
+
+label, p, span, div, .stMarkdown, .stTextInput {
+    color: white !important;
 }
 
 </style>
