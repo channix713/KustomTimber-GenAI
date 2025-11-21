@@ -5,6 +5,7 @@
 #  - Automatic Status detection (Invoiced / Shipped / Landed / Ordered)
 #  - Ask user to specify Status if missing (Option 3)
 #  - Refactored utils, safer planner, better cache & refresh
+#  - Branded Kustom Timber UI
 # ======================================================================
 
 import os
@@ -26,7 +27,90 @@ from openai import OpenAI
 # STREAMLIT SETUP
 # ======================================================================
 st.set_page_config(page_title="Inventory Chatbot", layout="wide")
-st.title("📦 Kustom Timber Stock Inventory Chatbot")
+
+# ---------- GLOBAL THEME / CSS ----------
+CUSTOM_CSS = """
+<style>
+
+body {
+    background-color: #F5F5F5;
+}
+
+:root {
+    --kt-dark: #2E2E2E;
+    --kt-light: #FFFFFF;
+    --kt-accent: #C8A570;
+    --kt-grey: #E0E0E0;
+}
+
+header, .stApp {
+    background-color: #F5F5F5 !important;
+}
+
+.block-container {
+    padding-top: 1rem !important;
+}
+
+/* Top Header Container */
+.kt-header {
+    background-color: var(--kt-dark);
+    padding: 24px 0 30px 0;
+    border-radius: 8px;
+    text-align: center;
+    margin-bottom: 30px;
+}
+
+.kt-header-title {
+    color: var(--kt-light);
+    font-size: 28px;
+    font-weight: 600;
+    margin-top: 8px;
+    letter-spacing: 0.5px;
+}
+
+/* Chat bubbles */
+.kt-user-msg {
+    background-color: var(--kt-accent);
+    padding: 14px 18px;
+    border-radius: 12px;
+    max-width: 70%;
+    color: black;
+    margin-bottom: 10px;
+}
+
+.kt-assistant-msg {
+    background-color: var(--kt-light);
+    padding: 14px 18px;
+    border-radius: 12px;
+    max-width: 70%;
+    border: 1px solid #DDD;
+    margin-bottom: 10px;
+}
+
+/* Sidebar styling */
+section[data-testid="stSidebar"] {
+    background-color: var(--kt-dark) !important;
+}
+section[data-testid="stSidebar"] * {
+    color: var(--kt-light) !important;
+}
+
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# ---------- LOGO HEADER ----------
+st.markdown(
+    """
+    <div class='kt-header'>
+        <img src='/mnt/data/kustom timber logo.jpg' width='120'>
+        <div class='kt-header-title'>
+            Kustom Timber Stock & Inventory AI Assistant
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ======================================================================
 # CONSTANTS
@@ -207,17 +291,13 @@ def detect_status_from_question(question: str) -> Optional[str]:
     return list(found)[0]
 
 # ======================================================================
-# REFRESH BUTTON
+# REFRESH BUTTON (logic only, used in sidebar)
 # ======================================================================
 def clear_sheet_cache_and_rerun():
     """Clear cached sheet data and rerun the app."""
     load_sheets.clear()  # type: ignore[attr-defined]
     st.success("🔄 Sheets cache cleared! Reloading...")
     st.experimental_rerun()
-
-
-if st.button("🔄 Refresh Sheets Now"):
-    clear_sheet_cache_and_rerun()
 
 # ======================================================================
 # LOAD SHEETS (CACHED)
@@ -312,18 +392,6 @@ def apply_plan(
 ) -> Tuple[Any, Optional[str]]:
     """
     Execute a JSON plan on a dataframe.
-
-    Plan schema:
-    {
-      "filters": [
-        {"column": "ITEM #", "op": "==", "value": 20373},
-        {"column": "Month", "op": "==", "value": "September 2025"},
-        {"column": "Status", "op": "==", "value": "Landed"}
-      ],
-      "metric": "AVAILABLE_num",
-      "aggregation": "sum" | "max" | "min" | "rows" | "list",
-      "limit": 50
-    }
     """
     if not isinstance(plan, dict):
         return None, "❌ Invalid plan format (not a dict)."
@@ -641,67 +709,132 @@ Explain the answer clearly and concisely for a non-technical user.
     return explanation, plan, result
 
 # ======================================================================
-# UI
+# BRANDED UI
 # ======================================================================
-st.subheader(
-    "Choose Sheet to Query:\n"
-    "Select stock_df to ask questions about IMR and summary_df for stock availability"
-)
 
-sheet_choice = st.selectbox(
-    "Sheet:", ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
-)
+# Initialise chat-style history
+if "history" not in st.session_state:
+    st.session_state.history = []  # list of (role, text)
 
+if "preset_question" not in st.session_state:
+    st.session_state.preset_question = ""
+
+# ---------- SIDEBAR ----------
+with st.sidebar:
+    st.markdown("## 🪵 Kustom Timber")
+    st.markdown("AI-powered stock & availability assistant.")
+    st.markdown("---")
+
+    sheet_choice = st.radio(
+        "📄 Choose Sheet",
+        ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"],
+    )
+
+    debug_mode = st.checkbox("🛠 Debug mode")
+    show_preview = st.checkbox("📊 Show sheet preview")
+
+    if st.button("🔄 Refresh Data"):
+        clear_sheet_cache_and_rerun()
+
+# Which sheet?
 df_name = "stock" if sheet_choice.startswith("Stock") else "summary"
 df_selected = stock_df if df_name == "stock" else summary_df
 
-if st.checkbox("Show DataFrame Preview"):
+# Optional preview
+if show_preview:
+    st.markdown("### Preview")
     st.dataframe(df_selected, use_container_width=True)
 
-st.markdown("### Quick questions")
+# ---------- MAIN BODY ----------
+st.markdown("### ✨ Ask Your Question")
 
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    if st.button("how many Ordered packs for 20373 for November 2025?"):
+if df_name == "stock":
+    st.info(
+        "For **stock_df**, your question must contain exactly ONE status:\n"
+        "**Invoiced**, **Shipped**, **Landed**, or **Ordered**."
+    )
+
+# ---------- QUICK QUESTIONS ----------
+st.markdown("#### 🔎 Quick Suggestions")
+
+colA, colB = st.columns(2)
+
+with colA:
+    if st.button("📦 Ordered packs for 20373 (Nov 2025)", key="q1"):
         st.session_state["preset_question"] = (
             "how many Ordered packs for 20373 for November 2025?"
         )
-with c2:
-    if st.button("how many Invoiced packs for 20373 for November 2025?"):
+
+    if st.button("🚢 Landed 20588 (Sep 2025)", key="q2"):
+        st.session_state["preset_question"] = (
+            "how many Landed packs for 20588 for September 2025?"
+        )
+
+with colB:
+    if st.button("🧾 Invoiced 20373 (Nov 2025)", key="q3"):
         st.session_state["preset_question"] = (
             "how many Invoiced packs for 20373 for November 2025?"
         )
-with c3:
-    if st.button("how many status (Landed) packs for 20588 for September 2025?"):
+
+    if st.button("📦 Availability 20246", key="q4"):
         st.session_state["preset_question"] = (
-            "how many status (Landed) packs for 20588 for September 2025?"
+            "how many available for 20246?"
         )
-with c4:
-    if st.button("how many available for 20246?"):
-        st.session_state["preset_question"] = "how many available for 20246?"
 
+# ---------- DISPLAY CHAT HISTORY ----------
+for role, msg in st.session_state.history:
+    bubble_class = "kt-user-msg" if role == "user" else "kt-assistant-msg"
+    align = "flex-end" if role == "user" else "flex-start"
+    st.markdown(
+        f"""
+        <div style='display:flex; justify-content:{align};'>
+            <div class='{bubble_class}'>{msg}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ---------- INPUT FORM ----------
 default_q = st.session_state.get("preset_question", "")
-question = st.text_input("Ask your question:", value=default_q)
 
-show_debug = st.checkbox("🛠 Show debug plan & raw result")
+with st.form("ask_form", clear_on_submit=True):
+    question = st.text_input(
+        "",
+        value=default_q,
+        placeholder=(
+            "e.g., How many Landed packs for 20373 for September 2025?"
+            if df_name == "stock"
+            else "e.g., How many AVAILABLE for ITEM # 20373?"
+        ),
+    )
+    ask = st.form_submit_button("Ask")
 
-if st.button("Ask"):
-    if not question.strip():
-        st.warning("Enter a question first.")
-    else:
-        # Remember last question for convenience
-        st.session_state["last_question"] = question
+st.session_state["preset_question"] = ""
 
-        explanation, plan, result = answer_question(question, df_name)
+# ---------- PROCESS QUESTION ----------
+if ask and question.strip():
+    q = question.strip()
 
-        st.markdown("### Chatbot Answer")
-        st.write(explanation)
+    # Save user message
+    st.session_state.history.append(("user", q))
 
-        if show_debug:
-            if isinstance(plan, dict):
-                st.markdown("### 🧩 JSON Plan")
-                st.json(plan)
-            st.markdown("### 📄 Raw Result")
+    explanation, plan, result = answer_question(q, df_name)
+
+    st.session_state.history.append(("assistant", explanation))
+
+    # Render last assistant message immediately
+    st.markdown(
+        f"""
+        <div style='display:flex; justify-content:flex-start;'>
+            <div class='kt-assistant-msg'>{explanation}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if debug_mode and plan is not None:
+        with st.expander("🛠 Debug Info"):
+            st.json(plan)
             if isinstance(result, (pd.DataFrame, pd.Series)):
                 st.dataframe(result)
             else:
