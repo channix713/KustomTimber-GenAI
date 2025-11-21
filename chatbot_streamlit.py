@@ -647,12 +647,6 @@ Explain the answer clearly and concisely for a non-technical user.
 # ======================================================================
 
 # Centered main title
-st.markdown(
-    """
-    <h1 style='text-align:center; margin-bottom: 10px;'>📦 Kustom Timber Stock Inventory Chatbot</h1>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ------------------ SIDEBAR SETTINGS ------------------
 with st.sidebar:
