@@ -33,9 +33,8 @@ st.set_page_config(page_title="Inventory Chatbot", layout="wide")
 def load_logo_base64() -> Optional[str]:
     """
     Load the Kustom Timber logo from disk and return base64 string.
-    Option B: embed as base64 in HTML <img>.
+    Uses the file: /mnt/data/kustom timber logo.jpg
     """
-    # Adjust path if you relocate the file in your repo
     logo_path = Path("/mnt/data/kustom timber logo.jpg")
     try:
         with open(logo_path, "rb") as f:
@@ -61,14 +60,11 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
     background-color: #000000 !important;
 }
 
-header, footer {
-    background-color: #000000 !important;
-}
-
 /* Remove white block container background */
 .block-container {
     background-color: #000000 !important;
     padding-top: 1rem !important;
+    color: #F5F5F5 !important;
 }
 
 /* Header panel */
@@ -100,12 +96,12 @@ header, footer {
 }
 
 .kt-assistant-msg {
-    background-color: var(--kt-accent) !important;
+    background-color: #1A1A1A !important;
     padding: 14px 18px;
     border-radius: 12px;
     max-width: 70%;
     border: 1px solid #333;
-    color: #000000 !important;
+    color: #FFFFFF !important;
     margin-bottom: 10px;
 }
 
@@ -114,27 +110,32 @@ section[data-testid="stSidebar"] {
     background-color: #000000 !important;
 }
 section[data-testid="stSidebar"] * {
-    color: white !important;
+    color: #FFFFFF !important;
 }
 
-/* Main text (do NOT override all divs) */
-.stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2,
-.stMarkdown h3, .stMarkdown h4, label, span {
-    color: white !important;
+/* Headings & body text in main area */
+.block-container h1,
+.block-container h2,
+.block-container h3,
+.block-container h4,
+.block-container p,
+.block-container span,
+.block-container label {
+    color: #F5F5F5 !important;
 }
 
-/* Ensure inputs have visible text/placeholder */
-input, textarea {
-    color: white !important;
+/* Inputs */
+.stTextInput input {
+    color: #FFFFFF !important;
     background-color: #111111 !important;
 }
-::placeholder {
+.stTextInput input::placeholder {
     color: #888888 !important;
 }
 
-/* Buttons */
-button[kind="secondary"] {
-    color: white !important;
+/* Buttons - keep Streamlit styling but ensure text visible */
+button {
+    color: #FFFFFF !important;
 }
 
 </style>
@@ -868,6 +869,8 @@ if ask and question.strip():
     st.session_state.last_result = result
 
 # ---------- DISPLAY CHAT HISTORY (AFTER PROCESSING) ----------
+if st.session_state.history:
+    st.markdown("### 💬 Conversation")
 for role, msg in st.session_state.history:
     bubble_class = "kt-user-msg" if role == "user" else "kt-assistant-msg"
     align = "flex-end" if role == "user" else "flex-start"
