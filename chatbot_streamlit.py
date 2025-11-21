@@ -478,11 +478,11 @@ with st.sidebar:
     st.subheader("Choose Sheet")
     sheet_choice = st.selectbox(
         "Sheet:",
-        ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
+        ["IMR File", "Inventory Summary"]
     )
 
-    df_name = "stock" if sheet_choice.startswith("Stock") else "summary"
-    df_selected = stock_df if df_name == "stock" else summary_df
+    df_name = "IMR" if sheet_choice.startswith("IMR") else "summary"
+    df_selected = stock_df if df_name == "IMR" else summary_df
 
     if st.checkbox("Show DataFrame Preview"):
         st.dataframe(df_selected, use_container_width=True)
