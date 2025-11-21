@@ -25,7 +25,7 @@ from openai import OpenAI
 # ======================================================================
 # STREAMLIT SETUP
 # ======================================================================
-st.title("📦 Kustom Timber Stock Inventory Chatbot")
+# st.title("📦 Kustom Timber Stock Inventory Chatbot")
 
 # ======================================================================
 # CONSTANTS
