@@ -1,6 +1,6 @@
 # ======================================================================
 # STREAMLIT GOOGLE SHEETS CHATBOT (Stock + Summary)
-# PRODUCTION-SAFE VERSION (Chat UI + JSON Planner + Streamlit Cloud Safe)
+# PRODUCTION-SAFE VERSION (no st.chat_input; chat-style UI with text_input)
 # ======================================================================
 
 import os
@@ -69,8 +69,10 @@ MONTH_MAP = {
         "December": ["dec", "december"],
     }.items() for s in keys
 }
-
-MONTH_NAMES = list({v for v in MONTH_MAP.values()})
+MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+]
 
 # ======================================================================
 # LOAD OPENAI KEY
@@ -130,9 +132,8 @@ def normalize_month_string(m: Any) -> Optional[str]:
             return f"{MONTH_NAMES[mm - 1]} {yyyy}"
 
     # "september 2025"
-    if len(parts) == 2 and parts[0].capitalize() in MONTH_NAMES:
-        if re.match(r"^\d{4}$", parts[1]):
-            return f"{parts[0].capitalize()} {parts[1]}"
+    if len(parts) == 2 and parts[0].capitalize() in MONTH_NAMES and parts[1].isdigit():
+        return f"{parts[0].capitalize()} {parts[1]}"
 
     return None
 
@@ -292,7 +293,7 @@ RULES:
 - Filter product/item code using '{id_col}'.
 - For counts/totals, use metric '{metric_col}' unless user names another numeric column.
 - If a month appears and 'Month' exists, include it.
-- If a status is detected for stock_df, include it: {detected_status}
+- For stock_df, if a status is detected, include it: {detected_status}
 
 USER QUESTION:
 {question}
@@ -315,7 +316,7 @@ def get_plan(question, df_name, detected_status):
 
     try:
         return json.loads(resp.choices[0].message.content)
-    except:
+    except Exception:
         return None
 
 
@@ -327,7 +328,8 @@ def answer_question(question, df_name):
         status = detect_status_from_question(question)
         if status is None:
             return (
-                "⚠ Missing status. Include ONE status: Invoiced, Shipped, Landed, Ordered.",
+                "⚠ Missing status. Please include ONE of: "
+                "Invoiced, Shipped, Landed, Ordered.",
                 None,
                 None,
             )
@@ -344,7 +346,11 @@ def answer_question(question, df_name):
     if err:
         return err, plan, result
 
-    preview = result.head(15).to_string() if isinstance(result, pd.DataFrame) else str(result)
+    preview = (
+        result.head(15).to_string()
+        if isinstance(result, pd.DataFrame)
+        else str(result)
+    )
 
     explain_prompt = f"""
 Explain the following result to a non-technical user:
@@ -367,15 +373,13 @@ RESULT PREVIEW:
 
     return resp.choices[0].message.content.strip(), plan, result
 
-
 # ======================================================================
-# UI (CLOUD-SAFE MODERN CHAT INTERFACE)
+# UI (Chat-style with text_input + form)
 # ======================================================================
 
 # Init session state safely
 if "history" not in st.session_state:
-    st.session_state.history = []
-
+    st.session_state.history = []  # list of (role, message)
 if "preset_question" not in st.session_state:
     st.session_state.preset_question = ""
 
@@ -422,17 +426,23 @@ with st.expander("📌 Example Questions"):
 
     with col1:
         if st.button("Ordered packs 20373 (Nov 2025)"):
-            st.session_state.preset_question = "How many Ordered packs for 20373 for November 2025?"
-
+            st.session_state.preset_question = (
+                "How many Ordered packs for 20373 for November 2025?"
+            )
         if st.button("Landed packs 20588 (Sep 2025)"):
-            st.session_state.preset_question = "How many Landed packs for 20588 for September 2025?"
+            st.session_state.preset_question = (
+                "How many Landed packs for 20588 for September 2025?"
+            )
 
     with col2:
         if st.button("Invoiced packs 20373 (Nov 2025)"):
-            st.session_state.preset_question = "How many Invoiced packs for 20373 for November 2025?"
-
+            st.session_state.preset_question = (
+                "How many Invoiced packs for 20373 for November 2025?"
+            )
         if st.button("AVAILABLE for item 20246"):
-            st.session_state.preset_question = "How many AVAILABLE for ITEM # 20246?"
+            st.session_state.preset_question = (
+                "How many AVAILABLE for ITEM # 20246?"
+            )
 
 # ================================
 # CHAT HISTORY DISPLAY
@@ -441,30 +451,35 @@ for role, msg in st.session_state.history:
     st.chat_message(role).write(msg)
 
 # ================================
-# INPUT (Cloud-safe)
+# INPUT FORM (no chat_input; fully compatible)
 # ================================
-question = st.chat_input(
-    label="Ask your question...",
-    placeholder=(
-        "e.g., How many Landed packs for 20373 for September 2025?"
-        if df_name == "stock"
-        else "e.g., How many AVAILABLE for ITEM # 20373?"
-    ),
-)
+default_question = st.session_state.preset_question
 
-# If question not typed but preset button clicked
-if not question and st.session_state.preset_question:
-    question = st.session_state.preset_question
-    st.session_state.preset_question = ""
+with st.form("chat_form", clear_on_submit=True):
+    question = st.text_input(
+        "Ask your question:",
+        value=default_question,
+        placeholder=(
+            "e.g., How many Landed packs for 20373 for September 2025?"
+            if df_name == "stock"
+            else "e.g., How many AVAILABLE for ITEM # 20373?"
+        ),
+    )
+    submitted = st.form_submit_button("Ask")
+
+# Clear preset after rendering it once
+st.session_state.preset_question = ""
 
 # ================================
 # PROCESS INPUT
 # ================================
-if question:
-    # Save user message
-    st.session_state.history.append(("user", question))
+if submitted and question.strip():
+    q = question.strip()
 
-    explanation, plan, result = answer_question(question, df_name)
+    # Save user message
+    st.session_state.history.append(("user", q))
+
+    explanation, plan, result = answer_question(q, df_name)
 
     # Show assistant response
     st.session_state.history.append(("assistant", explanation))
@@ -478,5 +493,3 @@ if question:
                 st.dataframe(result)
             else:
                 st.write(result)
-
-    st.experimental_rerun()
