@@ -475,7 +475,7 @@ st.markdown(
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    st.subheader("Choose Sheet")
+    st.subheader("Choose Sheet: \n Select stock_df for IMR data\nsummary_df for Stock Availability")
     sheet_choice = st.selectbox(
         "Sheet:",
         ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
