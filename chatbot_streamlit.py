@@ -5,14 +5,14 @@
 #  - Automatic Status detection (Invoiced / Shipped / Landed / Ordered)
 #  - Ask user to specify Status if missing (Option 3)
 #  - Refactored utils, safer planner, better cache & refresh
-#  - Branded Kustom Timber UI
+#  - Branded Kustom Timber UI (Black theme)
 # ======================================================================
 
 import os
 import re
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -78,7 +78,7 @@ header, footer {
     padding: 14px 18px;
     border-radius: 12px;
     max-width: 70%;
-    color: black;
+    color: black !important;
     margin-bottom: 10px;
 }
 
@@ -88,7 +88,7 @@ header, footer {
     border-radius: 12px;
     max-width: 70%;
     border: 1px solid #333;
-    color: white;
+    color: white !important;
     margin-bottom: 10px;
 }
 
@@ -100,7 +100,8 @@ section[data-testid="stSidebar"] * {
     color: white !important;
 }
 
-label, p, span, div, .stMarkdown, .stTextInput {
+/* General text elements */
+label, .stMarkdown, .stTextInput {
     color: white !important;
 }
 
@@ -475,7 +476,6 @@ def apply_plan(
 
     # rows mode
     if isinstance(limit, int) and limit > 0:
-        # Clip limit to avoid huge results
         safe_limit = min(limit, 500)
         return filtered.head(safe_limit), None
 
@@ -718,15 +718,21 @@ Explain the answer clearly and concisely for a non-technical user.
     return explanation, plan, result
 
 # ======================================================================
-# BRANDED UI
+# BRANDED UI (BLACK THEME + CHAT)
 # ======================================================================
 
-# Initialise chat-style history
+# Initialise chat-style history + debug state
 if "history" not in st.session_state:
     st.session_state.history = []  # list of (role, text)
 
 if "preset_question" not in st.session_state:
     st.session_state.preset_question = ""
+
+if "last_plan" not in st.session_state:
+    st.session_state.last_plan = None
+
+if "last_result" not in st.session_state:
+    st.session_state.last_result = None
 
 # ---------- SIDEBAR ----------
 with st.sidebar:
@@ -770,38 +776,25 @@ colA, colB = st.columns(2)
 
 with colA:
     if st.button("📦 Ordered packs for 20373 (Nov 2025)", key="q1"):
-        st.session_state["preset_question"] = (
+        st.session_state.preset_question = (
             "how many Ordered packs for 20373 for November 2025?"
         )
 
     if st.button("🚢 Landed 20588 (Sep 2025)", key="q2"):
-        st.session_state["preset_question"] = (
+        st.session_state.preset_question = (
             "how many Landed packs for 20588 for September 2025?"
         )
 
 with colB:
     if st.button("🧾 Invoiced 20373 (Nov 2025)", key="q3"):
-        st.session_state["preset_question"] = (
+        st.session_state.preset_question = (
             "how many Invoiced packs for 20373 for November 2025?"
         )
 
     if st.button("📦 Availability 20246", key="q4"):
-        st.session_state["preset_question"] = (
+        st.session_state.preset_question = (
             "how many available for 20246?"
         )
-
-# ---------- DISPLAY CHAT HISTORY ----------
-for role, msg in st.session_state.history:
-    bubble_class = "kt-user-msg" if role == "user" else "kt-assistant-msg"
-    align = "flex-end" if role == "user" else "flex-start"
-    st.markdown(
-        f"""
-        <div style='display:flex; justify-content:{align};'>
-            <div class='{bubble_class}'>{msg}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 # ---------- INPUT FORM ----------
 default_q = st.session_state.get("preset_question", "")
@@ -818,7 +811,8 @@ with st.form("ask_form", clear_on_submit=True):
     )
     ask = st.form_submit_button("Ask")
 
-st.session_state["preset_question"] = ""
+# Reset preset after using it
+st.session_state.preset_question = ""
 
 # ---------- PROCESS QUESTION ----------
 if ask and question.strip():
@@ -829,22 +823,31 @@ if ask and question.strip():
 
     explanation, plan, result = answer_question(q, df_name)
 
+    # Save assistant message
     st.session_state.history.append(("assistant", explanation))
 
-    # Render last assistant message immediately
+    # Store last plan & result for debug display
+    st.session_state.last_plan = plan
+    st.session_state.last_result = result
+
+# ---------- DISPLAY CHAT HISTORY (AFTER PROCESSING) ----------
+for role, msg in st.session_state.history:
+    bubble_class = "kt-user-msg" if role == "user" else "kt-assistant-msg"
+    align = "flex-end" if role == "user" else "flex-start"
     st.markdown(
         f"""
-        <div style='display:flex; justify-content:flex-start;'>
-            <div class='kt-assistant-msg'>{explanation}</div>
+        <div style='display:flex; justify-content:{align};'>
+            <div class='{bubble_class}'>{msg}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    if debug_mode and plan is not None:
-        with st.expander("🛠 Debug Info"):
-            st.json(plan)
-            if isinstance(result, (pd.DataFrame, pd.Series)):
-                st.dataframe(result)
-            else:
-                st.write(result)
+# ---------- DEBUG INFO ----------
+if debug_mode and st.session_state.last_plan is not None:
+    with st.expander("🛠 Debug Info"):
+        st.json(st.session_state.last_plan)
+        if isinstance(st.session_state.last_result, (pd.DataFrame, pd.Series)):
+            st.dataframe(st.session_state.last_result)
+        else:
+            st.write(st.session_state.last_result)
