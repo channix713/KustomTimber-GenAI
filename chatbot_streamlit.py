@@ -640,19 +640,28 @@ Explain the answer clearly and concisely for a non-technical user.
     return explanation, plan, result
 
 # ======================================================================
-# UI
-# ======================================================================
-# ======================================================================
-# UI
+# UI — CHAT STYLE INTERFACE
 # ======================================================================
 
-# Centered main title
+# Initialize chat history
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
+
+
+# ------------------ MAIN TITLE ------------------
+st.markdown(
+    """
+    <h1 style='text-align:center; margin-bottom: 10px;'>📦 Kustom Timber Stock Inventory Chatbot</h1>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # ------------------ SIDEBAR SETTINGS ------------------
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    st.subheader("Choose Sheet to Query: \n Select stock_df for IMR questions and Summary_df for Stock Availability")
+    st.subheader("Choose Sheet to Query:\nSelect stock_df for IMR, summary_df for availability")
     sheet_choice = st.selectbox(
         "Sheet:", ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
     )
@@ -673,38 +682,78 @@ with st.sidebar:
     if st.button("Available for 20246"):
         st.session_state["preset_question"] = "how many available for 20246?"
 
-    # Debug toggle
     show_debug = st.checkbox("🛠 Show debug plan & raw result")
 
 
-# ------------------ MAIN CONTENT ------------------
+# ------------------ CHAT DISPLAY ------------------
+st.markdown("### 💬 Conversation")
 
+for msg in st.session_state["chat_history"]:
+    if msg["role"] == "user":
+        st.markdown(
+            f"""
+            <div style="background:#DCF8C6;padding:10px;border-radius:10px;margin-bottom:5px;width:fit-content;max-width:80%;">
+                <strong>You:</strong><br>{msg["content"]}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f"""
+            <div style="background:#F1F0F0;padding:10px;border-radius:10px;margin-bottom:5px;width:fit-content;max-width:80%;">
+                <strong>Bot:</strong><br>{msg["content"]}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ------------------ MESSAGE INPUT ------------------
 default_q = st.session_state.get("preset_question", "")
 question = st.text_input(
-    "Ask your question:",
+    "Ask a question:",
     value=default_q,
-    placeholder="e.g., how many landed packs for 20588 for September 2025?"
+    placeholder="e.g., how many landed packs for 20588 for September 2025?",
 )
 
-if st.button("Ask"):
+if st.button("Send"):
     if not question.strip():
         st.warning("Enter a question first.")
     else:
-        st.session_state["last_question"] = question
+        # store user message
+        st.session_state["chat_history"].append({"role": "user", "content": question})
+
+        # process answer
         explanation, plan, result = answer_question(question, df_name)
 
-        st.markdown("### 💬 Chatbot Answer")
-        st.write(explanation)
+        # store bot response
+        st.session_state["chat_history"].append({"role": "assistant", "content": explanation})
 
-        # Debug outputs
-        if show_debug:
-            if isinstance(plan, dict):
-                st.markdown("### 🧩 JSON Plan")
-                st.json(plan)
+        # Clear preset
+        st.session_state["preset_question"] = ""
 
-            st.markdown("### 📄 Raw Result")
-            if isinstance(result, (pd.DataFrame, pd.Series)):
-                st.dataframe(result)
-            else:
-                st.write(result)
+        # Rerun to refresh chat bubbles
+        st.experimental_rerun()
+
+
+# ------------------ DEBUG OUTPUT ------------------
+if show_debug and "last_question" in st.session_state:
+    st.markdown("---")
+    st.markdown("### 🛠 Debug Info")
+
+    explanation, plan, result = answer_question(
+        st.session_state.get("last_question", ""), df_name
+    )
+
+    if isinstance(plan, dict):
+        st.markdown("### 🧩 JSON Plan")
+        st.json(plan)
+
+    st.markdown("### 📄 Raw Result")
+    if isinstance(result, (pd.DataFrame, pd.Series)):
+        st.dataframe(result)
+    else:
+        st.write(result)
+
 
