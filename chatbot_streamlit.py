@@ -603,7 +603,7 @@ if st.checkbox("Show DataFrame Preview"):
 
 st.markdown("### Quick questions")
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 with c1:
     if st.button("how many Ordered packs for 20373 for November 2025?"):
         st.session_state["preset_question"] = "how many Ordered packs for 20373 for November 2025?"
@@ -612,10 +612,13 @@ with c2:
         st.session_state["preset_question"] = "how many Invoiced packs for 20373 for November 2025?"
 with c3:
     if st.button("how many status (Landed) packs for 20588 for September 2025?"):
-        st.session_state["preset_question"] = "how many status (Landed) packs for 20588 for September 2025??"
+        st.session_state["preset_question"] = "how many status (Landed) packs for 20588 for September 2025?"
+with c4:
+    if st.button("how many available for 20246?"):
+        st.session_state["preset_question"] = "how many available for 20246?"
 
 default_q = st.session_state.get("preset_question", "")
-question = st.text_input("Ask your question (case-insensitive):", value=default_q)
+question = st.text_input("Ask your question:", value=default_q)
 
 show_debug = st.checkbox("🛠 Show debug plan & raw result")
 
