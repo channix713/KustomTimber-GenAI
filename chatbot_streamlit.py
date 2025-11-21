@@ -640,15 +640,14 @@ Explain the answer clearly and concisely for a non-technical user.
     return explanation, plan, result
 
 # ======================================================================
-# UI — CHAT STYLE INTERFACE
+# UI — CHAT STYLE INTERFACE (Improved)
 # ======================================================================
 
 # Initialize chat history
 if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = []
 
-
-# ------------------ MAIN TITLE ------------------
+# Main centered title
 st.markdown(
     """
     <h1 style='text-align:center; margin-bottom: 10px;'>📦 Kustom Timber Stock Inventory Chatbot</h1>
@@ -684,29 +683,63 @@ with st.sidebar:
 
     show_debug = st.checkbox("🛠 Show debug plan & raw result")
 
+    st.markdown("---")
+    if st.button("🧹 Clear Chat History"):
+        st.session_state["chat_history"] = []
+        st.rerun()
 
-# ------------------ CHAT DISPLAY ------------------
-st.markdown("### 💬 Conversation")
 
-for msg in st.session_state["chat_history"]:
-    if msg["role"] == "user":
-        st.markdown(
-            f"""
-            <div style="background:#DCF8C6;padding:10px;border-radius:10px;margin-bottom:5px;width:fit-content;max-width:80%;">
-                <strong>You:</strong><br>{msg["content"]}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            f"""
-            <div style="background:#F1F0F0;padding:10px;border-radius:10px;margin-bottom:5px;width:fit-content;max-width:80%;">
-                <strong>Bot:</strong><br>{msg["content"]}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+# ------------------ SCROLLABLE CHAT WINDOW ------------------
+
+# Container with CSS scroll box
+chat_container = st.container()
+
+scroll_css = """
+<style>
+.chat-box {
+    max-height: 420px;
+    overflow-y: auto;
+    padding-right: 12px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: #fafafa;
+}
+.chat-bubble-user {
+    background:#DCF8C6;
+    padding:10px;
+    border-radius:10px;
+    margin-bottom:5px;
+    width:fit-content;
+    max-width:80%;
+}
+.chat-bubble-bot {
+    background:#F1F0F0;
+    padding:10px;
+    border-radius:10px;
+    margin-bottom:5px;
+    width:fit-content;
+    max-width:80%;
+}
+</style>
+"""
+st.markdown(scroll_css, unsafe_allow_html=True)
+
+with chat_container:
+    st.markdown("<div class='chat-box'>", unsafe_allow_html=True)
+
+    for msg in st.session_state["chat_history"]:
+        if msg["role"] == "user":
+            st.markdown(
+                f"<div class='chat-bubble-user'><strong>You:</strong><br>{msg['content']}</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"<div class='chat-bubble-bot'><strong>Bot:</strong><br>{msg['content']}</div>",
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ------------------ MESSAGE INPUT ------------------
@@ -717,24 +750,28 @@ question = st.text_input(
     placeholder="e.g., how many landed packs for 20588 for September 2025?",
 )
 
+
 if st.button("Send"):
     if not question.strip():
         st.warning("Enter a question first.")
     else:
-        # store user message
-        st.session_state["chat_history"].append({"role": "user", "content": question})
+        # Store user message
+        st.session_state["chat_history"].append(
+            {"role": "user", "content": question}
+        )
 
-        # process answer
+        # Compute bot answer
         explanation, plan, result = answer_question(question, df_name)
 
-        # store bot response
-        st.session_state["chat_history"].append({"role": "assistant", "content": explanation})
+        # Store bot response
+        st.session_state["chat_history"].append(
+            {"role": "assistant", "content": explanation}
+        )
 
-        # Clear preset
+        # Clear quick preset to avoid reuse
         st.session_state["preset_question"] = ""
 
-        # Rerun to refresh chat bubbles
-        st.experimental_rerun()
+        st.rerun()  # safe Streamlit rerun
 
 
 # ------------------ DEBUG OUTPUT ------------------
