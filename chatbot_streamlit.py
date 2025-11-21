@@ -25,7 +25,6 @@ from openai import OpenAI
 # ======================================================================
 # STREAMLIT SETUP
 # ======================================================================
-st.set_page_config(page_title="Inventory Chatbot", layout="wide")
 st.title("📦 Kustom Timber Stock Inventory Chatbot")
 
 # ======================================================================
