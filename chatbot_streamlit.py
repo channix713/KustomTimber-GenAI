@@ -643,66 +643,75 @@ Explain the answer clearly and concisely for a non-technical user.
 # ======================================================================
 # UI
 # ======================================================================
-st.subheader(
-    "Choose Sheet to Query:\n"
-    "Select stock_df to ask questions about IMR and summary_df for stock availability"
+# ======================================================================
+# UI
+# ======================================================================
+
+# Centered main title
+st.markdown(
+    """
+    <h1 style='text-align:center; margin-bottom: 10px;'>📦 Kustom Timber Stock Inventory Chatbot</h1>
+    """,
+    unsafe_allow_html=True,
 )
 
-sheet_choice = st.selectbox(
-    "Sheet:", ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
-)
+# ------------------ SIDEBAR SETTINGS ------------------
+with st.sidebar:
+    st.header("⚙️ Settings")
 
-df_name = "stock" if sheet_choice.startswith("Stock") else "summary"
-df_selected = stock_df if df_name == "stock" else summary_df
+    st.subheader("Choose Sheet to Query")
+    sheet_choice = st.selectbox(
+        "Sheet:", ["Stock Sheet (stock_df)", "Summary Sheet (summary_df)"]
+    )
 
-if st.checkbox("Show DataFrame Preview"):
-    st.dataframe(df_selected, use_container_width=True)
+    df_name = "stock" if sheet_choice.startswith("Stock") else "summary"
+    df_selected = stock_df if df_name == "stock" else summary_df
 
-st.markdown("### Quick questions")
+    if st.checkbox("Show DataFrame Preview"):
+        st.dataframe(df_selected, use_container_width=True)
 
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    if st.button("how many Ordered packs for 20373 for November 2025?"):
-        st.session_state["preset_question"] = (
-            "how many Ordered packs for 20373 for November 2025?"
-        )
-with c2:
-    if st.button("how many Invoiced packs for 20373 for November 2025?"):
-        st.session_state["preset_question"] = (
-            "how many Invoiced packs for 20373 for November 2025?"
-        )
-with c3:
-    if st.button("how many status (Landed) packs for 20588 for September 2025?"):
-        st.session_state["preset_question"] = (
-            "how many status (Landed) packs for 20588 for September 2025?"
-        )
-with c4:
-    if st.button("how many available for 20246?"):
+    st.subheader("Quick Questions")
+    if st.button("Ordered 20373 - Nov 2025"):
+        st.session_state["preset_question"] = "how many Ordered packs for 20373 for November 2025?"
+    if st.button("Invoiced 20373 - Nov 2025"):
+        st.session_state["preset_question"] = "how many Invoiced packs for 20373 for November 2025?"
+    if st.button("Landed 20588 - Sep 2025"):
+        st.session_state["preset_question"] = "how many status (Landed) packs for 20588 for September 2025?"
+    if st.button("Available for 20246"):
         st.session_state["preset_question"] = "how many available for 20246?"
 
-default_q = st.session_state.get("preset_question", "")
-question = st.text_input("Ask your question:", value=default_q)
+    # Debug toggle
+    show_debug = st.checkbox("🛠 Show debug plan & raw result")
 
-show_debug = st.checkbox("🛠 Show debug plan & raw result")
+
+# ------------------ MAIN CONTENT ------------------
+
+default_q = st.session_state.get("preset_question", "")
+question = st.text_input(
+    "Ask your question:",
+    value=default_q,
+    placeholder="e.g., how many landed packs for 20588 for September 2025?"
+)
 
 if st.button("Ask"):
     if not question.strip():
         st.warning("Enter a question first.")
     else:
-        # Remember last question for convenience
         st.session_state["last_question"] = question
-
         explanation, plan, result = answer_question(question, df_name)
 
-        st.markdown("### Chatbot Answer")
+        st.markdown("### 💬 Chatbot Answer")
         st.write(explanation)
 
+        # Debug outputs
         if show_debug:
             if isinstance(plan, dict):
                 st.markdown("### 🧩 JSON Plan")
                 st.json(plan)
+
             st.markdown("### 📄 Raw Result")
             if isinstance(result, (pd.DataFrame, pd.Series)):
                 st.dataframe(result)
             else:
                 st.write(result)
+
