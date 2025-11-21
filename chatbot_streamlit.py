@@ -38,7 +38,7 @@ body {
 
 :root {
     --kt-dark: #2E2E2E;
-    --kt-light: #FFFFFF;
+    --kt-light: #000000;
     --kt-accent: #C8A570;
     --kt-grey: #E0E0E0;
 }
